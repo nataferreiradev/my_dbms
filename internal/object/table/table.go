@@ -1,13 +1,14 @@
 package table
 
-type TableObject struct {
-	tableCreator TableCreator
+type Table struct {
+	tableCreator tableCreator
+	tableReader  tableReader
 }
 
-func (t *TableObject) Create(name string) {
+func (t *Table) Create(name string) {
 	t.tableCreator.CreateTable(name)
 }
 
-func (t *TableCreator) Read(path string) {
-
+func (t *Table) Read(path string) {
+	t.tableReader.Read(path)
 }

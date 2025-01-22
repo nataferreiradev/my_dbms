@@ -5,17 +5,17 @@ import (
 	objectcreator "my_DBMS/internal/object/object_creator"
 )
 
-type TableCreator struct {
+type tableCreator struct {
 	objectCreator objectcreator.ObjectCreator
 }
 
-func NewTableCreator(objectcreator objectcreator.ObjectCreator) *TableCreator {
-	return &TableCreator{
-		objectCreator: objectcreator,
+func NewTableCreator(objectCreator objectcreator.ObjectCreator) *tableCreator {
+	return &tableCreator{
+		objectCreator: objectCreator,
 	}
 }
 
-func (t *TableCreator) CreateTable(name string) (tablePath string, err error) {
+func (t *tableCreator) CreateTable(name string) (tablePath string, err error) {
 	tablePath, err = t.objectCreator.Create(name, object.TableExtension)
 	return
 }

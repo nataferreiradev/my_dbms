@@ -1,5 +1,5 @@
 package objectreader
 
-type ObjectReader interface{
+type ObjectReader interface {
 	Read(path string)
 }
