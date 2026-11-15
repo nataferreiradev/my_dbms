@@ -17,18 +17,21 @@ type Token struct {
 }
 
 var keywords = map[string]bool{
-	"SELECT": true,
-	"FROM":   true,
-	"WHERE":  true,
-	"AND":    true,
-	"OR":     true,
-	"CREATE": true,
-	"TABLE":  true,
-	"INSERT": true,
-	"INTO":   true,
-	"VALUES": true,
-	"INT":    true,
-	"TEXT":   true,
+	"SELECT":  true,
+	"FROM":    true,
+	"WHERE":   true,
+	"AND":     true,
+	"OR":      true,
+	"CREATE":  true,
+	"TABLE":   true,
+	"INSERT":  true,
+	"INTO":    true,
+	"VALUES":  true,
+	"INT":     true,
+	"TEXT":    true,
+	"PRIMARY": true,
+	"KEY":     true,
+	"UNIQUE":  true,
 }
 
 var operators = map[string]bool{

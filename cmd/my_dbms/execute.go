@@ -36,29 +36,76 @@ func execute(db *storage.DB, input string) (string, error) {
 	return "", fmt.Errorf("comando não suportado: %s", input)
 }
 
-// createTable roda CREATE TABLE <nome> (coluna TIPO, ...).
+// createTable roda CREATE TABLE <nome> (coluna TIPO, ...). Depois do tipo a
+// coluna pode ter PRIMARY KEY ou UNIQUE, e chaves de várias colunas entram
+// como itens da lista: PRIMARY KEY (a, b), UNIQUE (c, d).
 func createTable(db *storage.DB, name string, list []sql.Token) (string, error) {
 	items, err := parseList(list)
 	if err != nil {
 		return "", err
 	}
 
-	columns := make([]storage.Column, len(items))
-	for i, item := range items {
-		if len(item) != 2 || item[0].Type != sql.Identifier {
+	var columns []storage.Column
+	var keys []storage.Key
+	for _, item := range items {
+		if kind, rest, ok := keyPrefix(item); ok {
+			cols, err := parseNames(rest)
+			if err != nil {
+				return "", fmt.Errorf("chave mal formada %q: %w", tokensText(item), err)
+			}
+			keys = append(keys, storage.Key{Kind: kind, Columns: cols})
+			continue
+		}
+
+		if len(item) < 2 || item[0].Type != sql.Identifier {
 			return "", fmt.Errorf("coluna mal formada %q, use nome TIPO", tokensText(item))
 		}
-		typ := item[1].Value
+		col, typ := item[0].Value, item[1].Value
 		if typ != "INT" && typ != "TEXT" {
-			return "", fmt.Errorf("tipo inválido para a coluna %s: %q (use INT ou TEXT)", item[0].Value, typ)
+			return "", fmt.Errorf("tipo inválido para a coluna %s: %q (use INT ou TEXT)", col, typ)
 		}
-		columns[i] = storage.Column{Name: item[0].Value, Type: typ}
+		if len(item) > 2 {
+			kind, rest, ok := keyPrefix(item[2:])
+			if !ok || len(rest) > 0 {
+				return "", fmt.Errorf("coluna mal formada %q, depois do tipo só cabe PRIMARY KEY ou UNIQUE", tokensText(item))
+			}
+			keys = append(keys, storage.Key{Kind: kind, Columns: []string{col}})
+		}
+		columns = append(columns, storage.Column{Name: col, Type: typ})
 	}
 
-	if err := db.CreateTable(name, columns); err != nil {
+	if err := db.CreateTable(name, columns, keys); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("tabela %s criada", name), nil
+}
+
+// keyPrefix reconhece PRIMARY KEY ou UNIQUE no começo dos tokens e devolve
+// o tipo da chave e o que sobrou.
+func keyPrefix(tokens []sql.Token) (storage.KeyKind, []sql.Token, bool) {
+	switch {
+	case len(tokens) >= 2 && match(tokens[:2], "PRIMARY", "KEY"):
+		return storage.PrimaryKey, tokens[2:], true
+	case len(tokens) >= 1 && match(tokens[:1], "UNIQUE"):
+		return storage.Unique, tokens[1:], true
+	}
+	return "", nil, false
+}
+
+// parseNames lê "(a, b, ...)" em que cada item é um nome de coluna.
+func parseNames(tokens []sql.Token) ([]string, error) {
+	items, err := parseList(tokens)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(items))
+	for i, item := range items {
+		if len(item) != 1 || item[0].Type != sql.Identifier {
+			return nil, fmt.Errorf("esperava nome de coluna, veio %q", tokensText(item))
+		}
+		names[i] = item[0].Value
+	}
+	return names, nil
 }
 
 // insert roda INSERT INTO <nome> VALUES (valor, ...).
@@ -163,13 +210,24 @@ func parseList(tokens []sql.Token) ([][]sql.Token, error) {
 	return splitCommas(tokens[1 : n-1])
 }
 
-// splitCommas separa os tokens nas vírgulas. Item vazio é erro.
+// splitCommas separa os tokens nas vírgulas que estão fora de parênteses,
+// para "id INT, PRIMARY KEY (a, b)" virar dois itens. Item vazio é erro.
 func splitCommas(tokens []sql.Token) ([][]sql.Token, error) {
 	items := [][]sql.Token{nil}
+	depth := 0
 	for _, tok := range tokens {
-		if tok.Type == sql.Symbol && tok.Value == "," {
-			items = append(items, nil)
-			continue
+		if tok.Type == sql.Symbol {
+			switch tok.Value {
+			case "(":
+				depth++
+			case ")":
+				depth--
+			case ",":
+				if depth == 0 {
+					items = append(items, nil)
+					continue
+				}
+			}
 		}
 		last := len(items) - 1
 		items[last] = append(items[last], tok)

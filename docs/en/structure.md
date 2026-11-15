@@ -93,12 +93,33 @@ What describes the tables lives in the **catalog**,
 `type,name,table_name,definition`.
 
 ```
-table,pessoas,pessoas,"id INT,nome TEXT"
+table,pessoas,pessoas,"id INT,email TEXT,nome TEXT"
+primary_key,pessoas_pkey,pessoas,id
+unique,pessoas_email_key,pessoas,email
 ```
 
 | `type` | `definition` |
 |---|---|
 | `table` | Columns and types: `id INT,nome TEXT`. |
+| `primary_key` | Primary key columns: `id` or `a,b`. At most one per table. |
+| `unique` | Columns of a unique key. |
+
+The `type` column is the discriminator: it says what kind of object the line
+describes. A new object (index, foreign key) is a new `type` value and a
+`case` in `loadCatalog`. A key always comes after its table's line, and its
+name is generated: `<table>_pkey` or `<table>_<columns>_key`.
+
+In SQL, a key goes after the column type, or as its own list item for
+multi-column keys:
+
+```sql
+CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT);
+CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
+```
+
+There is no index yet: `InsertRow` checks each key by reading the whole table
+and rejects the record if another one already has the same values in the
+key's columns.
 
 `Open` loads the whole catalog into memory, and operations read that copy.
 The catalog's own schema is fixed in code (`catalogSchema`), so it can be
@@ -125,7 +146,8 @@ which is written as `""` so the reader doesn't skip the line.
    case match(tokens, "DROP", "TABLE", sql.Identifier):
        return dropTable(db, tokens[2].Value)
    ```
-   For lists in parentheses, use `parseList`.
+   For lists in parentheses, use `parseList` (or `parseNames` when the list
+   is only column names).
 3. If it needs the disk, add the method to `storage.DB`.
 4. Write the test in `execute_test.go` (and in the package that changed).
 

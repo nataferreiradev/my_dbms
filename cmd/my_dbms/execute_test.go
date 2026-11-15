@@ -64,6 +64,64 @@ func TestCreateTableInvalidColumns(t *testing.T) {
 	}
 }
 
+func TestKeys(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT UNIQUE, a INT, b INT, unique (a, b));", want: "tabela users criada"},
+		{input: "SELECT type, name, definition FROM _catalog;", want: "type        | name            | definition\n------------+-----------------+------------------------------\ntable       | users           | id INT,email TEXT,a INT,b INT\nprimary_key | users_pkey      | id\nunique      | users_email_key | email\nunique      | users_a_b_key   | a,b\n(4 linhas)"},
+		{input: `INSERT INTO users VALUES (1, "ana@x", 1, 1);`, want: "1 linha inserida"},
+		{input: `INSERT INTO users VALUES (01, "bia@x", 2, 2);`, wantErr: true},
+		{input: `INSERT INTO users VALUES (2, "ana@x", 2, 2);`, wantErr: true},
+		{input: `INSERT INTO users VALUES (2, "bia@x", 1, 1);`, wantErr: true},
+		{input: `INSERT INTO users VALUES (2, "bia@x", 1, 2);`, want: "1 linha inserida"},
+		{input: "CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));", want: "tabela pares criada"},
+		{input: "INSERT INTO pares VALUES (1, 2);", want: "1 linha inserida"},
+		{input: "INSERT INTO pares VALUES (2, 1);", want: "1 linha inserida"},
+		{input: "INSERT INTO pares VALUES (1, 2);", wantErr: true},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
+func TestCreateTableInvalidKeys(t *testing.T) {
+	inputs := []string{
+		"CREATE TABLE t (id INT PRIMARY);",
+		"CREATE TABLE t (id INT KEY);",
+		"CREATE TABLE t (id INT UNIQUE UNIQUE);",
+		"CREATE TABLE t (id INT PRIMARY KEY nome);",
+		"CREATE TABLE t (id INT PRIMARY KEY, nome TEXT PRIMARY KEY);",
+		"CREATE TABLE t (id INT, PRIMARY KEY (x));",
+		"CREATE TABLE t (id INT, PRIMARY KEY ());",
+		"CREATE TABLE t (id INT, PRIMARY KEY id);",
+		"CREATE TABLE t (id INT, UNIQUE (id, id));",
+		"CREATE TABLE t (id INT, UNIQUE (1));",
+		"CREATE TABLE t (PRIMARY KEY (id));",
+	}
+
+	for _, input := range inputs {
+		db, _ := storage.Open(t.TempDir())
+		if _, err := execute(db, input); err == nil {
+			t.Errorf("execute(%q) deveria falhar", input)
+		}
+	}
+}
+
 func TestInsertInvalid(t *testing.T) {
 	inputs := []string{
 		`INSERT INTO nada VALUES (1, "Ana");`,

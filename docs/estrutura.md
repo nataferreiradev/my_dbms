@@ -91,12 +91,33 @@ O que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`:
 uma linha por objeto do banco, no formato `type,name,table_name,definition`.
 
 ```
-table,pessoas,pessoas,"id INT,nome TEXT"
+table,pessoas,pessoas,"id INT,email TEXT,nome TEXT"
+primary_key,pessoas_pkey,pessoas,id
+unique,pessoas_email_key,pessoas,email
 ```
 
 | `type` | `definition` |
 |---|---|
 | `table` | Colunas e tipos: `id INT,nome TEXT`. |
+| `primary_key` | Colunas da chave primária: `id` ou `a,b`. No máximo uma por tabela. |
+| `unique` | Colunas de uma chave única. |
+
+A coluna `type` é o discriminador: diz que tipo de objeto a linha descreve.
+Um objeto novo (índice, chave estrangeira) é um valor novo de `type` e um
+`case` em `loadCatalog`. Uma chave sempre vem depois da linha da tabela dela,
+e o nome é gerado: `<tabela>_pkey` ou `<tabela>_<colunas>_key`.
+
+No SQL, a chave vem depois do tipo da coluna ou como item próprio da lista,
+para chaves de várias colunas:
+
+```sql
+CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT);
+CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
+```
+
+Ainda não há índice: o `InsertRow` confere cada chave lendo a tabela inteira
+e recusa o registro se já existe outro com os mesmos valores nas colunas da
+chave.
 
 O `Open` carrega o catálogo inteiro para a memória, e as operações consultam
 essa cópia. O schema do próprio catálogo fica fixo no código
@@ -123,7 +144,8 @@ gravado como `""` para o leitor não pular a linha.
    case match(tokens, "DROP", "TABLE", sql.Identifier):
        return dropTable(db, tokens[2].Value)
    ```
-   Para listas entre parênteses, use `parseList`.
+   Para listas entre parênteses, use `parseList` (ou `parseNames`, se a
+   lista é só de nomes de coluna).
 3. Se precisar de disco, crie o método em `storage.DB`.
 4. Escreva o teste em `execute_test.go` (e no pacote que mudou).
 

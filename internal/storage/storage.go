@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -39,8 +40,26 @@ type Column struct {
 	Type string
 }
 
+// KeyKind diz que tipo de chave é. O valor é o que vai na coluna type do
+// catálogo.
+type KeyKind string
+
+const (
+	PrimaryKey KeyKind = "primary_key"
+	Unique     KeyKind = "unique"
+)
+
+// Key é uma restrição de unicidade sobre uma ou mais colunas. O Name é
+// gerado pelo CreateTable: <tabela>_pkey ou <tabela>_<colunas>_key.
+type Key struct {
+	Name    string
+	Kind    KeyKind
+	Columns []string
+}
+
 type Schema struct {
 	Columns []Column
+	Keys    []Key
 }
 
 type Table struct {
@@ -72,13 +91,16 @@ func Open(dir string) (*DB, error) {
 //
 //	type,name,table_name,definition
 //	table,users,users,"id INT,nome TEXT"
+//	primary_key,users_pkey,users,id
+//
+// Uma chave sempre vem depois da linha da tabela dela.
 func (db *DB) loadCatalog() error {
 	rows, err := db.readRows(catalogName, len(catalogSchema.Columns))
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		kind, name, def := row[0], row[1], row[3]
+		kind, name, tableName, def := row[0], row[1], row[2], row[3]
 		switch kind {
 		case kindTable:
 			columns, err := parseColumns(def)
@@ -86,6 +108,19 @@ func (db *DB) loadCatalog() error {
 				return fmt.Errorf("catálogo, tabela %q: %w", name, err)
 			}
 			db.tables[name] = Schema{Columns: columns}
+		case string(PrimaryKey), string(Unique):
+			schema, ok := db.tables[tableName]
+			if !ok {
+				return fmt.Errorf("catálogo corrompido: chave %q aponta para a tabela %q, que não existe", name, tableName)
+			}
+			key := Key{Name: name, Kind: KeyKind(kind), Columns: strings.Split(def, ",")}
+			for _, c := range key.Columns {
+				if columnIndex(schema.Columns, c) < 0 {
+					return fmt.Errorf("catálogo corrompido: chave %q usa a coluna %q, que não existe", name, c)
+				}
+			}
+			schema.Keys = append(schema.Keys, key)
+			db.tables[tableName] = schema
 		default:
 			return fmt.Errorf("catálogo corrompido: tipo de objeto %q desconhecido", kind)
 		}
@@ -93,7 +128,7 @@ func (db *DB) loadCatalog() error {
 	return nil
 }
 
-func (db *DB) CreateTable(name string, columns []Column) error {
+func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 	if name == "" {
 		return errors.New("nome da tabela não pode ser vazio")
 	}
@@ -114,6 +149,10 @@ func (db *DB) CreateTable(name string, columns []Column) error {
 		}
 		seen[c.Name] = true
 	}
+	keys, err := nameKeys(name, columns, keys)
+	if err != nil {
+		return err
+	}
 
 	// Primeiro o arquivo de dados, depois o catálogo: se algo falhar no meio,
 	// sobra no máximo um arquivo que o catálogo não enxerga.
@@ -127,17 +166,60 @@ func (db *DB) CreateTable(name string, columns []Column) error {
 	}
 	file.Close()
 
-	record := []string{kindTable, name, name, formatColumns(columns)}
-	if err := db.appendRows(catalogName, [][]string{record}); err != nil {
+	records := [][]string{{kindTable, name, name, formatColumns(columns)}}
+	for _, k := range keys {
+		records = append(records, []string{string(k.Kind), k.Name, name, strings.Join(k.Columns, ",")})
+	}
+	if err := db.appendRows(catalogName, records); err != nil {
 		os.Remove(path)
 		return err
 	}
-	db.tables[name] = Schema{Columns: columns}
+	db.tables[name] = Schema{Columns: columns, Keys: keys}
 	return nil
 }
 
+// nameKeys confere as chaves da tabela e devolve uma cópia com o Name de
+// cada uma preenchido.
+func nameKeys(table string, columns []Column, keys []Key) ([]Key, error) {
+	named := make([]Key, len(keys))
+	seen := map[string]bool{}
+	for i, k := range keys {
+		if len(k.Columns) == 0 {
+			return nil, errors.New("chave sem colunas")
+		}
+		inKey := map[string]bool{}
+		for _, c := range k.Columns {
+			if columnIndex(columns, c) < 0 {
+				return nil, fmt.Errorf("a chave usa a coluna %q, que não existe", c)
+			}
+			if inKey[c] {
+				return nil, fmt.Errorf("coluna %q repetida na chave", c)
+			}
+			inKey[c] = true
+		}
+
+		switch k.Kind {
+		case PrimaryKey:
+			k.Name = table + "_pkey"
+		case Unique:
+			k.Name = table + "_" + strings.Join(k.Columns, "_") + "_key"
+		default:
+			return nil, fmt.Errorf("tipo de chave desconhecido %q", k.Kind)
+		}
+		switch {
+		case seen[k.Name] && k.Kind == PrimaryKey:
+			return nil, errors.New("tabela só pode ter uma chave primária")
+		case seen[k.Name]:
+			return nil, fmt.Errorf("chave UNIQUE (%s) repetida", strings.Join(k.Columns, ", "))
+		}
+		seen[k.Name] = true
+		named[i] = k
+	}
+	return named, nil
+}
+
 // InsertRow acrescenta um registro no fim da tabela. Os valores já devem
-// estar validados contra o schema.
+// estar validados contra o schema; as chaves são conferidas aqui.
 func (db *DB) InsertRow(name string, values []string) error {
 	if isSystem(name) {
 		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
@@ -149,7 +231,51 @@ func (db *DB) InsertRow(name string, values []string) error {
 	if len(values) != len(schema.Columns) {
 		return fmt.Errorf("tabela %q tem %d colunas, mas vieram %d valores", name, len(schema.Columns), len(values))
 	}
+
+	if len(schema.Keys) > 0 {
+		rows, err := db.readRows(name, len(schema.Columns))
+		if err != nil {
+			return err
+		}
+		// Sem índice ainda: cada chave é conferida varrendo a tabela inteira.
+		for _, k := range schema.Keys {
+			if err := checkKey(schema.Columns, k, rows, values); err != nil {
+				return err
+			}
+		}
+	}
 	return db.appendRows(name, [][]string{values})
+}
+
+// checkKey devolve erro se alguma linha já tem, nas colunas da chave, os
+// mesmos valores que values.
+func checkKey(columns []Column, k Key, rows [][]string, values []string) error {
+	positions := make([]int, len(k.Columns))
+	for i, c := range k.Columns {
+		positions[i] = columnIndex(columns, c)
+	}
+	want := pick(values, positions)
+	for _, row := range rows {
+		if slices.Equal(pick(row, positions), want) {
+			return fmt.Errorf("valor duplicado viola a chave %s: (%s) = (%s) já existe",
+				k.Name, strings.Join(k.Columns, ", "), strings.Join(want, ", "))
+		}
+	}
+	return nil
+}
+
+// pick devolve os valores de row nas posições pedidas.
+func pick(row []string, positions []int) []string {
+	values := make([]string, len(positions))
+	for i, p := range positions {
+		values[i] = row[p]
+	}
+	return values
+}
+
+// columnIndex devolve a posição da coluna, ou -1 se ela não existe.
+func columnIndex(columns []Column, name string) int {
+	return slices.IndexFunc(columns, func(c Column) bool { return c.Name == name })
 }
 
 func (db *DB) ReadTable(name string) (*Table, error) {
