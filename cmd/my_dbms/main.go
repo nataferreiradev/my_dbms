@@ -6,13 +6,23 @@ import (
 	"os"
 	"strings"
 
+	"my_DBMS/internal/config"
 	"my_DBMS/internal/storage"
 )
 
-const prompt = "my_dbms> "
+const (
+	prompt     = "my_dbms> "
+	configFile = "my_dbms.conf"
+)
 
 func main() {
-	db, err := storage.Open("data")
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao ler configuração:", err)
+		os.Exit(1)
+	}
+
+	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao abrir banco:", err)
 		os.Exit(1)

@@ -14,6 +14,9 @@ my_dbms/
 │   ├── format.go         → desenha o resultado do SELECT como tabela
 │   └── format_test.go
 ├── internal/
+│   ├── config/           → parâmetros do banco
+│   │   ├── config.go     → Config, Default(), Load(): lê o my_dbms.conf
+│   │   └── config_test.go
 │   ├── sql/              → análise léxica do SQL
 │   │   ├── token.go      → Token, TokenType, keywords, operadores, símbolos
 │   │   ├── lexer.go      → Lex(): string → []Token
@@ -23,8 +26,23 @@ my_dbms/
 │       └── storage_test.go
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
+├── my_dbms.conf          → parâmetros (data_dir etc.)
 └── data/                 → criado em tempo de execução (ignorado pelo git)
 ```
+
+## Configuração
+
+Na inicialização, o `main.go` lê o `my_dbms.conf` da pasta onde o programa
+roda. O formato é `chave = valor`, uma por linha, com `#` para comentários.
+Se o arquivo não existir, valem os padrões de `config.Default()`.
+
+| Parâmetro | Padrão | O que é |
+|---|---|---|
+| `data_dir` | `data` | Pasta dos arquivos das tabelas. Caminho relativo parte da pasta onde o programa roda. |
+
+Para adicionar um parâmetro: um campo em `Config`, o valor padrão em
+`Default()`, um `case` em `Load()` e uma linha comentada no `my_dbms.conf`.
+Chave desconhecida é erro, para um erro de digitação não passar em silêncio.
 
 ## Fluxo de um comando
 
@@ -51,6 +69,7 @@ my_dbms/
 
 | Pacote | Faz | Não faz |
 |---|---|---|
+| `internal/config` | Lê o arquivo de parâmetros e aplica os padrões. | Não abre o banco nem conhece SQL. |
 | `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo. | Não sabe que existe disco nem tabela. |
 | `internal/storage` | Cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
 | `cmd/my_dbms` | Liga os dois: recebe a linha, chama `Lex`, decide o comando, valida valores contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo. |
@@ -60,7 +79,7 @@ nos deixa livres para mudar a API interna.
 
 ## Formato em disco
 
-Cada tabela é um arquivo CSV em `data/<nome>.marina`, lido e escrito com
+Cada tabela é um arquivo CSV em `<data_dir>/<nome>.marina`, lido e escrito com
 `encoding/csv`. A primeira linha guarda o schema e as outras, os registros:
 
 ```

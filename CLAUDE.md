@@ -7,7 +7,7 @@ projeto open source de estudo. A pessoa que mantém o projeto quer código
 ## Comandos
 
 ```
-go run ./cmd/my_dbms     # abre o REPL (tabelas ficam em ./data)
+go run ./cmd/my_dbms     # abre o REPL (tabelas ficam no data_dir do my_dbms.conf)
 go test ./...            # todos os testes
 go vet ./...
 gofmt -l .               # deve sair vazio

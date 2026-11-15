@@ -15,6 +15,9 @@ my_dbms/
 │   ├── format.go         → renders the SELECT result as a table
 │   └── format_test.go
 ├── internal/
+│   ├── config/           → database parameters
+│   │   ├── config.go     → Config, Default(), Load(): reads my_dbms.conf
+│   │   └── config_test.go
 │   ├── sql/              → lexical analysis of SQL
 │   │   ├── token.go      → Token, TokenType, keywords, operators, symbols
 │   │   ├── lexer.go      → Lex(): string → []Token
@@ -24,8 +27,23 @@ my_dbms/
 │       └── storage_test.go
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
+├── my_dbms.conf          → parameters (data_dir etc.)
 └── data/                 → created at runtime (ignored by git)
 ```
+
+## Configuration
+
+On startup, `main.go` reads `my_dbms.conf` from the folder the program runs
+in. The format is `key = value`, one per line, with `#` for comments. If the
+file doesn't exist, the defaults from `config.Default()` apply.
+
+| Parameter | Default | What it is |
+|---|---|---|
+| `data_dir` | `data` | Folder for the table files. A relative path starts from the folder the program runs in. |
+
+To add a parameter: a field in `Config`, the default value in `Default()`, a
+`case` in `Load()` and a commented line in `my_dbms.conf`. An unknown key is
+an error, so a typo doesn't slip by silently.
 
 ## How a command flows
 
@@ -53,6 +71,7 @@ my_dbms/
 | Package | Does | Does not |
 |---|---|---|
 | `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase. | Know that disks or tables exist. |
+| `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
 | `internal/storage` | Creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
 | `cmd/my_dbms` | Connects the two: takes the line, calls `Lex`, picks the command, validates values against the schema, calls storage and formats the output. | Implement file-format rules. |
 
@@ -61,7 +80,7 @@ which leaves us free to change the internal API.
 
 ## On-disk format
 
-Each table is a CSV file at `data/<name>.marina`, read and written with
+Each table is a CSV file at `<data_dir>/<name>.marina`, read and written with
 `encoding/csv`. The first line holds the schema and the rest are records:
 
 ```
