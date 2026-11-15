@@ -9,7 +9,7 @@ O objetivo é ter código pequeno e direto, que dê para ler de cima a baixo.
 my_dbms/
 ├── cmd/my_dbms/          → executável (REPL)
 │   ├── main.go           → lê linhas do stdin e imprime o resultado
-│   ├── execute.go        → reconhece o comando, valida e chama o storage
+│   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
 │   ├── format.go         → desenha o resultado do SELECT como tabela
 │   └── format_test.go
@@ -21,6 +21,10 @@ my_dbms/
 │   │   ├── token.go      → Token, TokenType, keywords, operadores, símbolos
 │   │   ├── lexer.go      → Lex(): string → []Token
 │   │   └── lexer_test.go
+│   ├── parser/           → análise sintática
+│   │   ├── ast.go        → Statement e os tipos de cada comando (a AST)
+│   │   ├── parser.go     → Parse(): []Token → Statement
+│   │   └── parser_test.go
 │   └── storage/          → persistência em disco
 │       ├── storage.go    → DB: catálogo, CreateTable, InsertRow, ReadTable
 │       └── storage_test.go
@@ -53,7 +57,10 @@ Chave desconhecida é erro, para um erro de digitação não passar em silêncio
   sql.Lex()            → [SELECT] [nome] [FROM] [pessoas] [;]
         │
         ▼
-  execute()            → casa SELECT ... FROM <identificador> e chama selectRows
+  parser.Parse()       → &Select{Table: "pessoas", Columns: ["nome"]}
+        │
+        ▼
+  execute()            → olha o tipo do Statement e chama selectRows
         │
         ▼
   storage.ReadTable()  → schema do catálogo em memória + linhas de data/pessoas.marina
@@ -70,9 +77,10 @@ Chave desconhecida é erro, para um erro de digitação não passar em silêncio
 | Pacote | Faz | Não faz |
 |---|---|---|
 | `internal/config` | Lê o arquivo de parâmetros e aplica os padrões. | Não abre o banco nem conhece SQL. |
-| `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo. | Não sabe que existe disco nem tabela. |
+| `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo e tira as aspas das strings. | Não sabe que existe disco nem tabela. |
+| `internal/parser` | Confere a gramática e transforma os tokens em uma AST (`Statement`). Erros de sintaxe saem daqui, com a posição. | Não sabe se a tabela ou a coluna existe. |
 | `internal/storage` | Mantém o catálogo, cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
-| `cmd/my_dbms` | Liga os dois: recebe a linha, chama `Lex`, decide o comando, valida valores contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo. |
+| `cmd/my_dbms` | Liga tudo: recebe a linha, chama `Lex` e `Parse`, roda o `Statement` contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo nem de gramática. |
 
 `internal/` impede que código de fora do módulo importe esses pacotes, o que
 nos deixa livres para mudar a API interna.
@@ -138,16 +146,19 @@ gravado como `""` para o leitor não pular a linha.
 
 1. Se o comando usa uma palavra nova, adicione em `keywords` em
    `internal/sql/token.go`.
-2. Adicione um `case` em `cmd/my_dbms/execute.go` que chama uma função
+2. Em `internal/parser/ast.go`, crie o tipo do comando com o método
+   `statement()`. Em `parser.go`, adicione um `case` em `Parse` e o método
+   que lê a gramática dele, usando os ajudantes `expect`, `accept`, `ident`,
+   `literal`, `list` e `names`.
+3. Adicione um `case` em `cmd/my_dbms/execute.go` que chama uma função
    própria do comando (como `createTable`, `insert`, `selectRows`):
    ```go
-   case match(tokens, "DROP", "TABLE", sql.Identifier):
-       return dropTable(db, tokens[2].Value)
+   case *parser.DropTable:
+       return dropTable(db, s)
    ```
-   Para listas entre parênteses, use `parseList` (ou `parseNames`, se a
-   lista é só de nomes de coluna).
-3. Se precisar de disco, crie o método em `storage.DB`.
-4. Escreva o teste em `execute_test.go` (e no pacote que mudou).
+4. Se precisar de disco, crie o método em `storage.DB`.
+5. Escreva os testes em `parser_test.go` e `execute_test.go` (e no pacote
+   que mudou).
 
 ## Princípios
 
@@ -166,8 +177,6 @@ gravado como `""` para o leitor não pular a linha.
 Quando surgir uma responsabilidade que não cabe nas de cima. Candidatos
 prováveis conforme o projeto crescer:
 
-- `internal/parser`: transformar tokens em uma árvore (AST), quando os
-  padrões em `execute.go` ficarem complicados demais.
 - `internal/engine`: executar a AST, tirando essa lógica do `cmd/`.
 - `internal/index`: índices sobre as tabelas.
 

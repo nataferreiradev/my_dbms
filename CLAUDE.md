@@ -28,15 +28,15 @@ gofmt -l .               # deve sair vazio
   precise de fake. Quando criar, declare no pacote consumidor.
 - **Sem** pastas `implementation/v1`, containers de injeção de dependência ou
   pacotes só de interfaces. O projeto saiu dessa estrutura de propósito.
-- Pacotes por domínio (`sql`, `storage`), nomes em minúsculo, sem camelCase.
+- Pacotes por domínio (`sql`, `parser`, `storage`), nomes em minúsculo, sem camelCase.
 - Identificadores em inglês. Comentários e mensagens de erro/saída para o
   usuário em português.
 - Erros com `error` e `fmt.Errorf("...: %w", err)`, sem tipos de erro
   customizados sem necessidade.
 - Testes no mesmo pacote, table-driven quando houver vários casos. Testes de
   storage usam `t.TempDir()`.
-- Comandos SQL novos: keyword em `internal/sql/token.go` + `case` em
-  `cmd/my_dbms/execute.go` + teste.
+- Comandos SQL novos: keyword em `internal/sql/token.go` + tipo na AST e
+  regra em `internal/parser` + `case` em `cmd/my_dbms/execute.go` + testes.
 
 ## Commits
 

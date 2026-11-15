@@ -10,7 +10,7 @@ bottom.
 my_dbms/
 ├── cmd/my_dbms/          → executable (REPL)
 │   ├── main.go           → reads lines from stdin and prints the result
-│   ├── execute.go        → recognizes the command, validates and calls storage
+│   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
 │   ├── format.go         → renders the SELECT result as a table
 │   └── format_test.go
@@ -22,6 +22,10 @@ my_dbms/
 │   │   ├── token.go      → Token, TokenType, keywords, operators, symbols
 │   │   ├── lexer.go      → Lex(): string → []Token
 │   │   └── lexer_test.go
+│   ├── parser/           → syntax analysis
+│   │   ├── ast.go        → Statement and the type of each command (the AST)
+│   │   ├── parser.go     → Parse(): []Token → Statement
+│   │   └── parser_test.go
 │   └── storage/          → on-disk persistence
 │       ├── storage.go    → DB: catalog, CreateTable, InsertRow, ReadTable
 │       └── storage_test.go
@@ -54,7 +58,10 @@ an error, so a typo doesn't slip by silently.
   sql.Lex()            → [SELECT] [nome] [FROM] [pessoas] [;]
         │
         ▼
-  execute()            → matches SELECT ... FROM <identifier> and calls selectRows
+  parser.Parse()       → &Select{Table: "pessoas", Columns: ["nome"]}
+        │
+        ▼
+  execute()            → checks the Statement type and calls selectRows
         │
         ▼
   storage.ReadTable()  → schema from the in-memory catalog + rows from data/pessoas.marina
@@ -70,10 +77,11 @@ an error, so a typo doesn't slip by silently.
 
 | Package | Does | Does not |
 |---|---|---|
-| `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase. | Know that disks or tables exist. |
+| `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase and strips quotes from strings. | Know that disks or tables exist. |
+| `internal/parser` | Checks the grammar and turns tokens into an AST (`Statement`). Syntax errors come from here, with the position. | Know whether the table or column exists. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
 | `internal/storage` | Maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
-| `cmd/my_dbms` | Connects the two: takes the line, calls `Lex`, picks the command, validates values against the schema, calls storage and formats the output. | Implement file-format rules. |
+| `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, calls storage and formats the output. | Implement file-format or grammar rules. |
 
 `internal/` prevents code outside the module from importing these packages,
 which leaves us free to change the internal API.
@@ -140,16 +148,19 @@ which is written as `""` so the reader doesn't skip the line.
 
 1. If the command uses a new word, add it to `keywords` in
    `internal/sql/token.go`.
-2. Add a `case` in `cmd/my_dbms/execute.go` that calls the command's own
+2. In `internal/parser/ast.go`, create the command's type with the
+   `statement()` method. In `parser.go`, add a `case` in `Parse` and the
+   method that reads its grammar, using the helpers `expect`, `accept`,
+   `ident`, `literal`, `list` and `names`.
+3. Add a `case` in `cmd/my_dbms/execute.go` that calls the command's own
    function (like `createTable`, `insert`, `selectRows`):
    ```go
-   case match(tokens, "DROP", "TABLE", sql.Identifier):
-       return dropTable(db, tokens[2].Value)
+   case *parser.DropTable:
+       return dropTable(db, s)
    ```
-   For lists in parentheses, use `parseList` (or `parseNames` when the list
-   is only column names).
-3. If it needs the disk, add the method to `storage.DB`.
-4. Write the test in `execute_test.go` (and in the package that changed).
+4. If it needs the disk, add the method to `storage.DB`.
+5. Write the tests in `parser_test.go` and `execute_test.go` (and in the
+   package that changed).
 
 ## Principles
 
@@ -168,8 +179,6 @@ which is written as `""` so the reader doesn't skip the line.
 When a responsibility shows up that doesn't fit the ones above. Likely
 candidates as the project grows:
 
-- `internal/parser`: turn tokens into a tree (AST), once the patterns in
-  `execute.go` get too complicated.
 - `internal/engine`: execute the AST, moving that logic out of `cmd/`.
 - `internal/index`: indexes over tables.
 
