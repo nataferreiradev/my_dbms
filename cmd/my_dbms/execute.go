@@ -52,26 +52,60 @@ func createTable(db *storage.DB, s *parser.CreateTable) (string, error) {
 }
 
 func insert(db *storage.DB, s *parser.Insert) (string, error) {
-	table, err := db.ReadTable(s.Table)
+	schema, err := db.TableSchema(s.Table)
 	if err != nil {
 		return "", err
 	}
-	if len(s.Values) != len(table.Columns) {
-		return "", fmt.Errorf("tabela %s tem %d colunas, mas vieram %d valores", s.Table, len(table.Columns), len(s.Values))
-	}
 
-	values := make([]storage.Value, len(s.Values))
-	for i, lit := range s.Values {
-		values[i], err = literalValue(lit, table.Columns[i])
-		if err != nil {
-			return "", err
+	// positions diz em que coluna da tabela cai cada valor da linha. Sem
+	// lista de colunas, é a ordem da tabela.
+	var positions []int
+	if s.Columns == nil {
+		for i := range schema.Columns {
+			positions = append(positions, i)
 		}
 	}
+	for _, name := range s.Columns {
+		i := schema.ColumnIndex(name)
+		if i < 0 {
+			return "", fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
+		}
+		if slices.Contains(positions, i) {
+			return "", fmt.Errorf("coluna %q repetida no INSERT", name)
+		}
+		positions = append(positions, i)
+	}
 
-	if err := db.InsertRow(s.Table, values); err != nil {
+	rows := make([][]storage.Value, len(s.Rows))
+	for r, lits := range s.Rows {
+		if len(lits) != len(positions) {
+			return "", fmt.Errorf("esperava %d valores por linha, mas a linha %d tem %d", len(positions), r+1, len(lits))
+		}
+		// Coluna fora da lista fica NULL.
+		row := make([]storage.Value, len(schema.Columns))
+		for i := range row {
+			row[i] = storage.Null
+		}
+		for j, p := range positions {
+			if row[p], err = literalValue(lits[j], schema.Columns[p]); err != nil {
+				return "", err
+			}
+		}
+		rows[r] = row
+	}
+
+	if err := db.InsertRows(s.Table, rows); err != nil {
 		return "", err
 	}
-	return "1 linha inserida", nil
+	return count(len(rows), "linha inserida", "linhas inseridas"), nil
+}
+
+// count escreve "1 linha inserida" ou "3 linhas inseridas".
+func count(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
 }
 
 // literalValue confere se o literal serve para a coluna e devolve o valor
@@ -113,7 +147,7 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 		}
 	}
 	for _, name := range s.Columns {
-		i := slices.IndexFunc(table.Columns, func(c storage.Column) bool { return c.Name == name })
+		i := table.ColumnIndex(name)
 		if i < 0 {
 			return "", fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
 		}

@@ -130,6 +130,40 @@ func TestNull(t *testing.T) {
 	}
 }
 
+func TestInsertColumnsAndRows(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE p (id INT PRIMARY KEY, nome TEXT, cidade TEXT);", want: "tabela p criada"},
+		{input: "INSERT INTO p VALUES (1, 'Ana', 'Recife'), (2, 'Bia', 'Natal');", want: "2 linhas inseridas"},
+		{input: "INSERT INTO p (nome, id) VALUES ('Caio', 3);", want: "1 linha inserida"},
+		{input: "INSERT INTO p (cidade) VALUES ('Olinda');", wantErr: true},
+		{input: "INSERT INTO p (id, idade) VALUES (4, 30);", wantErr: true},
+		{input: "INSERT INTO p (id, id) VALUES (4, 4);", wantErr: true},
+		{input: "INSERT INTO p (id, nome) VALUES (4, 'Dani', 'x');", wantErr: true},
+		{input: "INSERT INTO p (id) VALUES (4), (3);", wantErr: true},
+		{input: "INSERT INTO p (id) VALUES (4), (4);", wantErr: true},
+		{input: "SELECT * FROM p;", want: "id | nome | cidade\n---+------+-------\n1  | Ana  | Recife\n2  | Bia  | Natal\n3  | Caio | NULL\n(3 linhas)"},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
 func TestCreateTableInvalidKeys(t *testing.T) {
 	inputs := []string{
 		"CREATE TABLE t (id INT PRIMARY);",

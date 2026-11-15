@@ -25,10 +25,12 @@ type KeyDef struct {
 	Columns []string
 }
 
-// Insert é INSERT INTO tabela VALUES (valores).
+// Insert é INSERT INTO tabela [(colunas)] VALUES (valores), (valores)...
+// Columns nil quer dizer todas as colunas, na ordem da tabela.
 type Insert struct {
-	Table  string
-	Values []Literal
+	Table   string
+	Columns []string
+	Rows    [][]Literal
 }
 
 // Select é SELECT colunas FROM tabela. Columns nil quer dizer *.

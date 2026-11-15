@@ -118,7 +118,7 @@ func (p *parser) keyPrefix() (primary, isKey bool, err error) {
 	return false, false, nil
 }
 
-// insert lê INSERT INTO tabela VALUES (valor, ...).
+// insert lê INSERT INTO tabela [(a, b)] VALUES (valor, ...), (valor, ...).
 func (p *parser) insert() (*Insert, error) {
 	if err := p.expect("INSERT", "INTO"); err != nil {
 		return nil, err
@@ -127,17 +127,31 @@ func (p *parser) insert() (*Insert, error) {
 	if err != nil {
 		return nil, err
 	}
+	stmt := &Insert{Table: table}
+	if p.peek().Value == "(" {
+		if stmt.Columns, err = p.names(); err != nil {
+			return nil, err
+		}
+	}
 	if err := p.expect("VALUES"); err != nil {
 		return nil, err
 	}
 
-	stmt := &Insert{Table: table}
-	err = p.list(func() error {
-		lit, err := p.literal()
-		stmt.Values = append(stmt.Values, lit)
-		return err
-	})
-	return stmt, err
+	for {
+		var row []Literal
+		err := p.list(func() error {
+			lit, err := p.literal()
+			row = append(row, lit)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		stmt.Rows = append(stmt.Rows, row)
+		if !p.accept(",") {
+			return stmt, nil
+		}
+	}
 }
 
 // selectStmt lê SELECT * FROM tabela ou SELECT a, b FROM tabela.

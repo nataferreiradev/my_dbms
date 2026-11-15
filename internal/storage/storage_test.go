@@ -18,6 +18,10 @@ func texts(fields ...string) []Value {
 	return row
 }
 
+func insertOne(db *DB, table string, row []Value) error {
+	return db.InsertRows(table, [][]Value{row})
+}
+
 func TestCreateAndReadTable(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -87,7 +91,7 @@ func TestInsertRow(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, row := range tt.rows {
-				if err := db.InsertRow("t", row); err != nil {
+				if err := insertOne(db, "t", row); err != nil {
 					t.Fatalf("InsertRow(%v): %v", row, err)
 				}
 			}
@@ -119,10 +123,61 @@ func TestInsertRowErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db, _ := Open(t.TempDir())
 			db.CreateTable("t", columns, nil)
-			if err := db.InsertRow(tt.table, tt.row); err == nil {
+			if err := insertOne(db, tt.table, tt.row); err == nil {
 				t.Error("esperava erro")
 			}
 		})
+	}
+}
+
+func TestInsertRowsBatch(t *testing.T) {
+	keys := []Key{{Kind: PrimaryKey, Columns: []string{"id"}}}
+	tests := []struct {
+		name     string
+		rows     [][]Value
+		wantErr  bool
+		wantRows int
+	}{
+		{name: "lote válido", rows: [][]Value{texts("2", "Bia"), texts("3", "Caio")}, wantRows: 3},
+		{name: "repetido dentro do lote", rows: [][]Value{texts("2", "Bia"), texts("2", "Caio")}, wantErr: true, wantRows: 1},
+		{name: "repetido com a tabela", rows: [][]Value{texts("2", "Bia"), texts("1", "Caio")}, wantErr: true, wantRows: 1},
+		{name: "valores a menos no meio", rows: [][]Value{texts("2", "Bia"), texts("3")}, wantErr: true, wantRows: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, _ := Open(t.TempDir())
+			db.CreateTable("t", userColumns, keys)
+			insertOne(db, "t", texts("1", "Ana"))
+
+			err := db.InsertRows("t", tt.rows)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("InsertRows erro = %v, wantErr %v", err, tt.wantErr)
+			}
+			table, _ := db.ReadTable("t")
+			if len(table.Rows) != tt.wantRows {
+				t.Errorf("linhas = %v, want %d", table.Rows, tt.wantRows)
+			}
+		})
+	}
+}
+
+func TestTableSchema(t *testing.T) {
+	db, _ := Open(t.TempDir())
+	db.CreateTable("users", userColumns, nil)
+
+	schema, err := db.TableSchema("users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := schema.ColumnIndex("nome"); got != 1 {
+		t.Errorf("ColumnIndex(nome) = %d, want 1", got)
+	}
+	if got := schema.ColumnIndex("x"); got != -1 {
+		t.Errorf("ColumnIndex(x) = %d, want -1", got)
+	}
+	if _, err := db.TableSchema("nada"); err == nil {
+		t.Error("esperava erro para tabela inexistente")
 	}
 }
 
@@ -141,7 +196,7 @@ func TestCatalogSurvivesReopen(t *testing.T) {
 	if err := db.CreateTable("users", columns, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InsertRow("users", []Value{Text("1"), Null}); err != nil {
+	if err := insertOne(db, "users", []Value{Text("1"), Null}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,7 +239,7 @@ func TestSystemNames(t *testing.T) {
 	if err := db.CreateTable("_catalog", userColumns, nil); err == nil {
 		t.Error("esperava erro ao criar tabela com nome reservado")
 	}
-	if err := db.InsertRow("_catalog", texts("table", "x", "x", "id INT")); err == nil {
+	if err := insertOne(db, "_catalog", texts("table", "x", "x", "id INT")); err == nil {
 		t.Error("esperava erro ao inserir no catálogo")
 	}
 }
@@ -288,14 +343,14 @@ func TestInsertRowKeys(t *testing.T) {
 			if err := db.CreateTable("t", columns, keys); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.InsertRow("t", texts("1", "x", "y")); err != nil {
+			if err := insertOne(db, "t", texts("1", "x", "y")); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.InsertRow("t", []Value{Text("9"), Text("n"), Null}); err != nil {
+			if err := insertOne(db, "t", []Value{Text("9"), Text("n"), Null}); err != nil {
 				t.Fatal(err)
 			}
 
-			err := db.InsertRow("t", tt.row)
+			err := insertOne(db, "t", tt.row)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("InsertRow(%v) erro = %v, wantErr %v", tt.row, err, tt.wantErr)
 			}

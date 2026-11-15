@@ -27,7 +27,7 @@ my_dbms/
 │   │   ├── parser.go     → Parse(): []Token → Statement
 │   │   └── parser_test.go
 │   └── storage/          → on-disk persistence
-│       ├── storage.go    → DB: catalog, CreateTable, InsertRow, ReadTable
+│       ├── storage.go    → DB: catalog, CreateTable, InsertRows, ReadTable
 │       └── storage_test.go
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
@@ -125,7 +125,7 @@ CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT NOT NULL)
 CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
 ```
 
-There is no index yet: `InsertRow` checks each key by reading the whole table
+There is no index yet: `InsertRows` checks each key by reading the whole table
 and rejects the record if another one already has the same values in the
 key's columns. As in standard SQL, primary key columns become `NOT NULL`, and
 `NULL` equals nothing, so a `UNIQUE` key accepts several rows with `NULL`.

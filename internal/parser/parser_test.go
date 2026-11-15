@@ -55,11 +55,18 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: `INSERT INTO t VALUES (1, 'Ana', -2.5, null)`,
-			want: &Insert{Table: "t", Values: []Literal{
+			want: &Insert{Table: "t", Rows: [][]Literal{{
 				{Kind: Number, Text: "1"},
 				{Kind: String, Text: "Ana"},
 				{Kind: Number, Text: "-2.5"},
 				{Kind: Null, Text: "NULL"},
+			}}},
+		},
+		{
+			input: `INSERT INTO t (nome, id) VALUES ('Ana', 1), ('Bia', 2)`,
+			want: &Insert{Table: "t", Columns: []string{"nome", "id"}, Rows: [][]Literal{
+				{{Kind: String, Text: "Ana"}, {Kind: Number, Text: "1"}},
+				{{Kind: String, Text: "Bia"}, {Kind: Number, Text: "2"}},
 			}},
 		},
 		{
@@ -102,6 +109,9 @@ func TestParseErrors(t *testing.T) {
 		{input: "CREATE TABLE t (id INT, PRIMARY KEY id)", wantErr: `esperava "("`},
 		{input: "INSERT INTO t VALUES (1, nome)", wantErr: "esperava um valor"},
 		{input: "INSERT INTO t VALUES 1", wantErr: `esperava "("`},
+		{input: "INSERT INTO t VALUES (1),", wantErr: `esperava "("`},
+		{input: "INSERT INTO t (1) VALUES (1)", wantErr: "esperava um nome"},
+		{input: "INSERT INTO t () VALUES (1)", wantErr: "esperava um nome"},
 		{input: "SELECT FROM t", wantErr: "esperava um nome"},
 		{input: "SELECT * FROM t t", wantErr: "esperava o fim do comando"},
 	}

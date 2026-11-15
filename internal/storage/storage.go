@@ -243,60 +243,94 @@ func nameKeys(table string, columns []Column, keys []Key) ([]Key, error) {
 	return named, nil
 }
 
-// InsertRow acrescenta um registro no fim da tabela. Os tipos dos valores
-// já devem estar validados; NOT NULL e chaves são conferidos aqui.
-func (db *DB) InsertRow(name string, values []Value) error {
+// TableSchema devolve as colunas e chaves da tabela, sem ler os registros.
+func (db *DB) TableSchema(name string) (Schema, error) {
+	schema, ok := db.tables[name]
+	if !ok {
+		return Schema{}, fmt.Errorf("tabela %q não existe", name)
+	}
+	return schema, nil
+}
+
+// ColumnIndex devolve a posição da coluna, ou -1 se ela não existe.
+func (s Schema) ColumnIndex(name string) int {
+	return columnIndex(s.Columns, name)
+}
+
+// InsertRows acrescenta registros no fim da tabela: ou entram todos, ou
+// nenhum. Os tipos dos valores já devem estar validados; NOT NULL e chaves
+// são conferidos aqui.
+func (db *DB) InsertRows(name string, rows [][]Value) error {
 	if isSystem(name) {
 		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
 	}
-	schema, ok := db.tables[name]
-	if !ok {
-		return fmt.Errorf("tabela %q não existe", name)
+	schema, err := db.TableSchema(name)
+	if err != nil {
+		return err
 	}
-	if len(values) != len(schema.Columns) {
-		return fmt.Errorf("tabela %q tem %d colunas, mas vieram %d valores", name, len(schema.Columns), len(values))
-	}
-	for i, c := range schema.Columns {
-		if c.NotNull && values[i].Null {
-			return fmt.Errorf("a coluna %s não aceita NULL", c.Name)
-		}
+	if err := checkRows(schema, rows); err != nil {
+		return err
 	}
 
 	if len(schema.Keys) > 0 {
-		rows, err := db.readRows(name, len(schema.Columns))
+		existing, err := db.readRows(name, len(schema.Columns))
 		if err != nil {
 			return err
 		}
-		// Sem índice ainda: cada chave é conferida varrendo a tabela inteira.
-		for _, k := range schema.Keys {
-			if err := checkKey(schema.Columns, k, decodeRows(rows), values); err != nil {
-				return err
+		if err := checkKeys(schema, append(decodeRows(existing), rows...)); err != nil {
+			return err
+		}
+	}
+
+	encoded := make([][]string, len(rows))
+	for i, row := range rows {
+		encoded[i] = encodeRow(row)
+	}
+	return db.appendRows(name, encoded)
+}
+
+// checkRows confere o número de valores e o NOT NULL de cada linha.
+func checkRows(schema Schema, rows [][]Value) error {
+	for _, row := range rows {
+		if len(row) != len(schema.Columns) {
+			return fmt.Errorf("a tabela tem %d colunas, mas vieram %d valores", len(schema.Columns), len(row))
+		}
+		for i, c := range schema.Columns {
+			if c.NotNull && row[i].Null {
+				return fmt.Errorf("a coluna %s não aceita NULL", c.Name)
 			}
 		}
 	}
-	return db.appendRows(name, [][]string{encodeRow(values)})
+	return nil
 }
 
-// checkKey devolve erro se alguma linha já tem, nas colunas da chave, os
-// mesmos valores que values. Como no SQL, NULL não é igual a nada: uma chave
-// UNIQUE aceita várias linhas com NULL.
-func checkKey(columns []Column, k Key, rows [][]Value, values []Value) error {
-	positions := make([]int, len(k.Columns))
-	for i, c := range k.Columns {
-		positions[i] = columnIndex(columns, c)
-	}
-	want := pick(values, positions)
-	if slices.Contains(want, Null) {
-		return nil
-	}
-	for _, row := range rows {
-		if slices.Equal(pick(row, positions), want) {
-			texts := make([]string, len(want))
-			for i, v := range want {
+// checkKeys confere que nenhuma chave se repete entre as linhas. Sem índice
+// ainda, quem chama passa a tabela inteira. Como no SQL, NULL não é igual a
+// nada: uma chave UNIQUE aceita várias linhas com NULL.
+func checkKeys(schema Schema, rows [][]Value) error {
+	for _, k := range schema.Keys {
+		positions := make([]int, len(k.Columns))
+		for i, c := range k.Columns {
+			positions[i] = schema.ColumnIndex(c)
+		}
+
+		seen := map[string]bool{}
+		for _, row := range rows {
+			values := pick(row, positions)
+			if slices.Contains(values, Null) {
+				continue
+			}
+			texts := make([]string, len(values))
+			for i, v := range values {
 				texts[i] = v.Text
 			}
-			return fmt.Errorf("valor duplicado viola a chave %s: (%s) = (%s) já existe",
-				k.Name, strings.Join(k.Columns, ", "), strings.Join(texts, ", "))
+			// %q deixa ("a,b", "c") diferente de ("a", "b,c").
+			id := fmt.Sprintf("%q", texts)
+			if seen[id] {
+				return fmt.Errorf("valor duplicado viola a chave %s: (%s) = (%s) já existe",
+					k.Name, strings.Join(k.Columns, ", "), strings.Join(texts, ", "))
+			}
+			seen[id] = true
 		}
 	}
 	return nil
@@ -317,9 +351,9 @@ func columnIndex(columns []Column, name string) int {
 }
 
 func (db *DB) ReadTable(name string) (*Table, error) {
-	schema, ok := db.tables[name]
-	if !ok {
-		return nil, fmt.Errorf("tabela %q não existe", name)
+	schema, err := db.TableSchema(name)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := db.readRows(name, len(schema.Columns))
 	if err != nil {

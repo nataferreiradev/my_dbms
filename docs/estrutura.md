@@ -26,7 +26,7 @@ my_dbms/
 │   │   ├── parser.go     → Parse(): []Token → Statement
 │   │   └── parser_test.go
 │   └── storage/          → persistência em disco
-│       ├── storage.go    → DB: catálogo, CreateTable, InsertRow, ReadTable
+│       ├── storage.go    → DB: catálogo, CreateTable, InsertRows, ReadTable
 │       └── storage_test.go
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
@@ -123,7 +123,7 @@ CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT NOT NULL)
 CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
 ```
 
-Ainda não há índice: o `InsertRow` confere cada chave lendo a tabela inteira
+Ainda não há índice: o `InsertRows` confere cada chave lendo a tabela inteira
 e recusa o registro se já existe outro com os mesmos valores nas colunas da
 chave. Como no SQL padrão, colunas da chave primária viram `NOT NULL`, e
 `NULL` não é igual a nada, então uma chave `UNIQUE` aceita várias linhas com
