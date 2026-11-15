@@ -31,7 +31,9 @@ my_dbms/
 │       │                   ReplaceRows, DropTable
 │       ├── storage_test.go
 │       ├── page.go       → formato em disco: cabeçalho, páginas com slots, registros
-│       └── page_test.go
+│       ├── page_test.go
+│       ├── system.go     → tabelas do sistema montadas na memória: _settings, _tables
+│       └── system_test.go
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet e testes no Linux e no Windows
 ├── docs/                 → documentação do projeto (português)
@@ -223,6 +225,37 @@ essa cópia. O schema do próprio catálogo fica fixo no código
 (`catalogSchema`), por isso ele pode ser lido como uma tabela qualquer:
 `SELECT * FROM _catalog;`. Nomes começando com `_` são reservados para o
 sistema: não dá para criar tabela com eles nem fazer `INSERT` neles.
+
+### Tabelas do sistema
+
+Além do `_catalog`, duas tabelas do sistema não existem em disco: o
+`ReadTable` monta as linhas na hora, a partir do estado do banco (como as
+views `pg_settings` e `pg_tables` do PostgreSQL). Elas aceitam `SELECT` e
+`WHERE`, mas não podem ser alteradas.
+
+```
+my_dbms> SELECT * FROM _settings;
+name           | value | description
+---------------+-------+-------------------------------------------------------------------
+data_dir       | data  | pasta dos arquivos das tabelas
+page_size      | 4096  | tamanho das páginas em bytes, gravado no banco quando ele é criado
+format_version | 1     | versão do formato dos arquivos .marina
+
+my_dbms> SELECT * FROM _tables;
+name     | rows | pages | bytes
+---------+------+-------+------
+_catalog |    2 |     1 |  8192
+pessoas  |    2 |     1 |  8192
+```
+
+- `_settings`: os parâmetros com que o banco está rodando. O `my_dbms.conf`
+  continua existindo, porque o `data_dir` é necessário para achar o banco
+  antes de abri-lo.
+- `_tables`: uma linha por arquivo `.marina`, com o número de linhas, as
+  páginas de dados (sem a página 0) e o tamanho do arquivo em bytes.
+
+Para criar outra tabela do sistema: o nome e o schema em `system.go`, o
+schema no mapa `tables` do `Open` e um `case` no `ReadTable`.
 
 ### Escrita
 

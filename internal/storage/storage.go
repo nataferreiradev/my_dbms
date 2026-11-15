@@ -92,7 +92,11 @@ func Open(dir string, pageSize int) (*DB, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	db := &DB{dir: dir, pageSize: pageSize, tables: map[string]Schema{catalogName: catalogSchema}}
+	db := &DB{dir: dir, pageSize: pageSize, tables: map[string]Schema{
+		catalogName:  catalogSchema,
+		settingsName: settingsSchema,
+		tablesName:   tablesSchema,
+	}}
 
 	path := db.tablePath(catalogName)
 	data, err := os.ReadFile(path)
@@ -426,7 +430,15 @@ func (db *DB) ReadTable(name string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.readRows(name, schema.Columns)
+	var rows [][]Value
+	switch name {
+	case settingsName:
+		rows = db.settingsRows()
+	case tablesName:
+		rows, err = db.tablesRows()
+	default:
+		rows, err = db.readRows(name, schema.Columns)
+	}
 	if err != nil {
 		return nil, err
 	}

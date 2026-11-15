@@ -17,7 +17,9 @@ ler de cima a baixo.
   `>=`, `AND`, `OR`, parênteses e `IS [NOT] NULL`
 - `UPDATE`, `DELETE` e `DROP TABLE`
 - `NULL` com a semântica do SQL padrão (lógica de três valores)
-- um catálogo do sistema que pode ser consultado: `SELECT * FROM _catalog;`
+- tabelas do sistema que podem ser consultadas: o catálogo (`_catalog`), os
+  parâmetros do banco (`_settings`) e o espaço que cada tabela ocupa em disco
+  (`_tables`)
 - mensagens de erro em português, com a posição do problema no comando
 
 ## Como rodar
@@ -80,6 +82,10 @@ CREATE TABLE matriculas (aluno INT, curso INT, nota INT, PRIMARY KEY (aluno, cur
 
 -- Como o banco descreve as próprias tabelas
 SELECT * FROM _catalog;
+
+-- Parâmetros do banco e quanto cada tabela ocupa (linhas, páginas, bytes)
+SELECT * FROM _settings;
+SELECT name, rows, pages FROM _tables WHERE rows > 0;
 
 DROP TABLE matriculas;
 ```

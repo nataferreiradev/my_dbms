@@ -32,7 +32,9 @@ my_dbms/
 │       │                   ReplaceRows, DropTable
 │       ├── storage_test.go
 │       ├── page.go       → on-disk format: header, slotted pages, records
-│       └── page_test.go
+│       ├── page_test.go
+│       ├── system.go     → system tables built in memory: _settings, _tables
+│       └── system_test.go
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet and tests on Linux and Windows
 ├── docs/                 → project documentation (Portuguese)
@@ -224,6 +226,37 @@ The catalog's own schema is fixed in code (`catalogSchema`), so it can be
 read like any other table: `SELECT * FROM _catalog;`. Names starting with `_`
 are reserved for the system: you can't create a table with one or `INSERT`
 into it.
+
+### System tables
+
+Besides `_catalog`, two system tables don't exist on disk: `ReadTable` builds
+their rows on the spot from the database state (like PostgreSQL's
+`pg_settings` and `pg_tables` views). They accept `SELECT` and `WHERE`, but
+can't be changed.
+
+```
+my_dbms> SELECT * FROM _settings;
+name           | value | description
+---------------+-------+-------------------------------------------------------------------
+data_dir       | data  | pasta dos arquivos das tabelas
+page_size      | 4096  | tamanho das páginas em bytes, gravado no banco quando ele é criado
+format_version | 1     | versão do formato dos arquivos .marina
+
+my_dbms> SELECT * FROM _tables;
+name     | rows | pages | bytes
+---------+------+-------+------
+_catalog |    2 |     1 |  8192
+pessoas  |    2 |     1 |  8192
+```
+
+- `_settings`: the parameters the database is running with. `my_dbms.conf`
+  still exists, because `data_dir` is needed to find the database before
+  opening it.
+- `_tables`: one row per `.marina` file, with the row count, the data pages
+  (not counting page 0) and the file size in bytes.
+
+To add another system table: its name and schema in `system.go`, the schema
+in the `tables` map in `Open` and a `case` in `ReadTable`.
 
 ### Writing
 
