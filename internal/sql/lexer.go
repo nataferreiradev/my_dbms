@@ -1,89 +1,105 @@
 package sql
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode"
 )
 
 // Lex transforma uma string SQL em tokens classificados.
-// Keywords são normalizadas para maiúsculo; o resto mantém o texto original.
+// Keywords são normalizadas para maiúsculo, strings perdem as aspas e o resto
+// mantém o texto original.
 func Lex(input string) ([]Token, error) {
-	words := tokenize(input)
-	tokens := make([]Token, 0, len(words))
+	runes := []rune(input)
+	var tokens []Token
 
-	for i, word := range words {
-		typ, err := classify(word)
-		if err != nil {
-			return nil, fmt.Errorf("posição %d: %w", i, err)
+	for i := 0; i < len(runes); {
+		r, start := runes[i], i
+		switch {
+		case unicode.IsSpace(r):
+			i++
+
+		case r == '"' || r == '\'':
+			text, end, err := scanString(runes, start)
+			if err != nil {
+				return nil, fmt.Errorf("posição %d: %w", start+1, err)
+			}
+			tokens = append(tokens, Token{String, text, start})
+			i = end
+
+		case strings.ContainsRune(symbols, r):
+			tokens = append(tokens, Token{Symbol, string(r), start})
+			i++
+
+		case strings.ContainsRune(operatorChars, r):
+			op := string(r)
+			if i+1 < len(runes) && operators[op+string(runes[i+1])] {
+				op += string(runes[i+1])
+			}
+			tokens = append(tokens, Token{Operator, op, start})
+			i += len(op)
+
+		default:
+			for i < len(runes) && !isBoundary(runes[i]) {
+				i++
+			}
+			word := string(runes[start:i])
+			typ, err := classify(word)
+			if err != nil {
+				return nil, fmt.Errorf("posição %d: %w", start+1, err)
+			}
+			if typ == Keyword {
+				word = strings.ToUpper(word)
+			}
+			tokens = append(tokens, Token{typ, word, start})
 		}
-		if typ == Keyword {
-			word = strings.ToUpper(word)
-		}
-		tokens = append(tokens, Token{Type: typ, Value: word, Pos: i})
 	}
 
 	return tokens, nil
 }
 
-// tokenize quebra a entrada em palavras, separando símbolos como ; , ( )
-// e mantendo strings entre aspas inteiras.
-func tokenize(input string) []string {
-	var tokens []string
-	var current strings.Builder
-	inQuote := false
-
-	flush := func() {
-		if current.Len() > 0 {
-			tokens = append(tokens, current.String())
-			current.Reset()
+// scanString lê a string que começa na aspa runes[start] e devolve o texto e
+// a posição logo depois da aspa de fechamento. Aspas simples e duplas valem
+// igual. A mesma aspa repetida dentro da string vira uma só, então
+// "ele disse ""oi""" é o texto: ele disse "oi".
+func scanString(runes []rune, start int) (string, int, error) {
+	quote := runes[start]
+	var b strings.Builder
+	for i := start + 1; i < len(runes); i++ {
+		if runes[i] != quote {
+			b.WriteRune(runes[i])
+			continue
 		}
-	}
-
-	for _, r := range input {
-		switch {
-		case r == '"':
-			current.WriteRune(r)
-			inQuote = !inQuote
-		case inQuote:
-			current.WriteRune(r)
-		case unicode.IsSpace(r):
-			flush()
-		case strings.ContainsRune(symbols, r):
-			flush()
-			tokens = append(tokens, string(r))
-		default:
-			current.WriteRune(r)
+		if i+1 < len(runes) && runes[i+1] == quote {
+			b.WriteRune(quote)
+			i++
+			continue
 		}
+		return b.String(), i + 1, nil
 	}
-	flush()
-
-	return tokens
+	return "", 0, errors.New("string sem aspas de fechamento")
 }
 
-var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// isBoundary diz se o caractere termina uma palavra.
+func isBoundary(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune(symbols+operatorChars+`"'`, r)
+}
+
+var (
+	identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	numberPattern     = regexp.MustCompile(`^[+-]?[0-9]+(\.[0-9]+)?$`)
+)
 
 func classify(word string) (TokenType, error) {
 	switch {
 	case keywords[strings.ToUpper(word)]:
 		return Keyword, nil
-	case len(word) == 1 && strings.Contains(symbols, word):
-		return Symbol, nil
-	case operators[word]:
-		return Operator, nil
-	case isLiteral(word):
-		return Literal, nil
+	case numberPattern.MatchString(word):
+		return Number, nil
 	case identifierPattern.MatchString(word):
 		return Identifier, nil
 	}
 	return "", fmt.Errorf("token inválido %q", word)
-}
-
-func isLiteral(word string) bool {
-	if _, err := strconv.Atoi(word); err == nil {
-		return true
-	}
-	return len(word) > 1 && word[0] == '"' && word[len(word)-1] == '"'
 }

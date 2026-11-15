@@ -6,10 +6,14 @@ const (
 	Keyword    TokenType = "KEYWORD"
 	Identifier TokenType = "IDENTIFIER"
 	Operator   TokenType = "OPERATOR"
-	Literal    TokenType = "LITERAL"
+	Number     TokenType = "NUMBER"
+	String     TokenType = "STRING"
 	Symbol     TokenType = "SYMBOL"
 )
 
+// Token é um pedaço classificado da entrada. Pos é a posição do primeiro
+// caractere, contando a partir de 0. Em String, Value é o texto já sem as
+// aspas.
 type Token struct {
 	Type  TokenType
 	Value string
@@ -43,5 +47,9 @@ var operators = map[string]bool{
 	">=": true,
 	"<>": true,
 }
+
+// operatorChars são os caracteres que começam um operador. Eles separam
+// palavras mesmo sem espaço: "id=1" vira [id] [=] [1].
+const operatorChars = "*=<>"
 
 const symbols = ";,()"

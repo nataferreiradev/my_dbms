@@ -125,10 +125,10 @@ func insert(db *storage.DB, name string, list []sql.Token) (string, error) {
 	values := make([]string, len(items))
 	for i, item := range items {
 		col := table.Columns[i]
-		if len(item) != 1 || item[0].Type != sql.Literal {
+		if len(item) != 1 || (item[0].Type != sql.Number && item[0].Type != sql.String) {
 			return "", fmt.Errorf("valor inválido para a coluna %s: %q", col.Name, tokensText(item))
 		}
-		values[i], err = literalValue(item[0].Value, col)
+		values[i], err = literalValue(item[0], col)
 		if err != nil {
 			return "", err
 		}
@@ -141,20 +141,17 @@ func insert(db *storage.DB, name string, list []sql.Token) (string, error) {
 }
 
 // literalValue confere se o literal serve para a coluna e devolve o valor
-// como ele vai para o disco: número normalizado ou texto sem as aspas.
-func literalValue(lit string, col storage.Column) (string, error) {
-	quoted := strings.HasPrefix(lit, `"`)
+// como ele vai para o disco: número inteiro normalizado ou o texto.
+func literalValue(tok sql.Token, col storage.Column) (string, error) {
 	switch {
-	case col.Type == "INT" && !quoted:
-		n, err := strconv.Atoi(lit)
-		if err != nil {
-			return "", err
+	case col.Type == "INT" && tok.Type == sql.Number:
+		if n, err := strconv.Atoi(tok.Value); err == nil {
+			return strconv.Itoa(n), nil
 		}
-		return strconv.Itoa(n), nil
-	case col.Type == "TEXT" && quoted:
-		return lit[1 : len(lit)-1], nil
+	case col.Type == "TEXT" && tok.Type == sql.String:
+		return tok.Value, nil
 	}
-	return "", fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, lit)
+	return "", fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, tok.Value)
 }
 
 // selectRows roda SELECT * FROM <nome> ou SELECT a, b FROM <nome>.
