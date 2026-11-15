@@ -56,6 +56,48 @@ func TestCreateTableTwice(t *testing.T) {
 	}
 }
 
+func TestInsertRow(t *testing.T) {
+	tests := []struct {
+		name    string
+		columns []Column
+		rows    [][]string
+	}{
+		{name: "simples", columns: userColumns, rows: [][]string{{"1", "Ana"}, {"2", "Bruno"}}},
+		{name: "vírgula e aspas", columns: userColumns, rows: [][]string{{"1", `Silva, "Ana"`}}},
+		{name: "campo único vazio", columns: []Column{{"s", "TEXT"}}, rows: [][]string{{""}, {"x"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, _ := Open(t.TempDir())
+			if err := db.CreateTable("t", tt.columns); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range tt.rows {
+				if err := db.InsertRow("t", row); err != nil {
+					t.Fatalf("InsertRow(%q): %v", row, err)
+				}
+			}
+
+			table, err := db.ReadTable("t")
+			if err != nil {
+				t.Fatalf("ReadTable: %v", err)
+			}
+			if !reflect.DeepEqual(table.Rows, tt.rows) {
+				t.Errorf("linhas = %q, want %q", table.Rows, tt.rows)
+			}
+		})
+	}
+}
+
+func TestInsertRowMissingTable(t *testing.T) {
+	db, _ := Open(t.TempDir())
+
+	if err := db.InsertRow("nada", []string{"1"}); err == nil {
+		t.Error("esperava erro ao inserir em tabela inexistente")
+	}
+}
+
 func TestReadMissingTable(t *testing.T) {
 	db, _ := Open(t.TempDir())
 

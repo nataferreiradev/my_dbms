@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"my_DBMS/internal/sql"
@@ -19,62 +21,174 @@ func execute(db *storage.DB, input string) (string, error) {
 		tokens = tokens[:n-1]
 	}
 
+	n := len(tokens)
 	switch {
-	case len(tokens) > 3 && match(tokens[:3], "CREATE", "TABLE", sql.Identifier):
-		name := tokens[2].Value
-		columns, err := parseColumns(tokens[3:])
-		if err != nil {
-			return "", err
-		}
-		if err := db.CreateTable(name, columns); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("tabela %s criada", name), nil
+	case n > 3 && match(tokens[:3], "CREATE", "TABLE", sql.Identifier):
+		return createTable(db, tokens[2].Value, tokens[3:])
 
-	case match(tokens, "SELECT", "*", "FROM", sql.Identifier):
-		table, err := db.ReadTable(tokens[3].Value)
-		if err != nil {
-			return "", err
-		}
-		names := make([]string, len(table.Columns))
-		for i, c := range table.Columns {
-			names[i] = c.Name
-		}
-		return strings.Join(names, " | ") + "\n(0 linhas)", nil
+	case n > 4 && match(tokens[:4], "INSERT", "INTO", sql.Identifier, "VALUES"):
+		return insert(db, tokens[2].Value, tokens[4:])
+
+	case n > 3 && match(tokens[:1], "SELECT") && match(tokens[n-2:], "FROM", sql.Identifier):
+		return selectRows(db, tokens[n-1].Value, tokens[1:n-2])
 	}
 
 	return "", fmt.Errorf("comando não suportado: %s", input)
 }
 
-// parseColumns lê a lista "(nome TIPO, nome TIPO, ...)" do CREATE TABLE.
-func parseColumns(tokens []sql.Token) ([]storage.Column, error) {
+// createTable roda CREATE TABLE <nome> (coluna TIPO, ...).
+func createTable(db *storage.DB, name string, list []sql.Token) (string, error) {
+	items, err := parseList(list)
+	if err != nil {
+		return "", err
+	}
+
+	columns := make([]storage.Column, len(items))
+	for i, item := range items {
+		if len(item) != 2 || item[0].Type != sql.Identifier {
+			return "", fmt.Errorf("coluna mal formada %q, use nome TIPO", tokensText(item))
+		}
+		typ := item[1].Value
+		if typ != "INT" && typ != "TEXT" {
+			return "", fmt.Errorf("tipo inválido para a coluna %s: %q (use INT ou TEXT)", item[0].Value, typ)
+		}
+		columns[i] = storage.Column{Name: item[0].Value, Type: typ}
+	}
+
+	if err := db.CreateTable(name, columns); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("tabela %s criada", name), nil
+}
+
+// insert roda INSERT INTO <nome> VALUES (valor, ...).
+func insert(db *storage.DB, name string, list []sql.Token) (string, error) {
+	items, err := parseList(list)
+	if err != nil {
+		return "", err
+	}
+	table, err := db.ReadTable(name)
+	if err != nil {
+		return "", err
+	}
+	if len(items) != len(table.Columns) {
+		return "", fmt.Errorf("tabela %s tem %d colunas, mas vieram %d valores", name, len(table.Columns), len(items))
+	}
+
+	values := make([]string, len(items))
+	for i, item := range items {
+		col := table.Columns[i]
+		if len(item) != 1 || item[0].Type != sql.Literal {
+			return "", fmt.Errorf("valor inválido para a coluna %s: %q", col.Name, tokensText(item))
+		}
+		values[i], err = literalValue(item[0].Value, col)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if err := db.InsertRow(name, values); err != nil {
+		return "", err
+	}
+	return "1 linha inserida", nil
+}
+
+// literalValue confere se o literal serve para a coluna e devolve o valor
+// como ele vai para o disco: número normalizado ou texto sem as aspas.
+func literalValue(lit string, col storage.Column) (string, error) {
+	quoted := strings.HasPrefix(lit, `"`)
+	switch {
+	case col.Type == "INT" && !quoted:
+		n, err := strconv.Atoi(lit)
+		if err != nil {
+			return "", err
+		}
+		return strconv.Itoa(n), nil
+	case col.Type == "TEXT" && quoted:
+		return lit[1 : len(lit)-1], nil
+	}
+	return "", fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, lit)
+}
+
+// selectRows roda SELECT * FROM <nome> ou SELECT a, b FROM <nome>.
+func selectRows(db *storage.DB, name string, list []sql.Token) (string, error) {
+	table, err := db.ReadTable(name)
+	if err != nil {
+		return "", err
+	}
+
+	// indexes diz quais colunas da tabela entram no resultado, em ordem.
+	var indexes []int
+	if len(list) == 1 && list[0].Value == "*" {
+		for i := range table.Columns {
+			indexes = append(indexes, i)
+		}
+	} else {
+		items, err := splitCommas(list)
+		if err != nil {
+			return "", err
+		}
+		for _, item := range items {
+			if len(item) != 1 || item[0].Type != sql.Identifier {
+				return "", fmt.Errorf("coluna inválida no SELECT: %q", tokensText(item))
+			}
+			i := slices.IndexFunc(table.Columns, func(c storage.Column) bool { return c.Name == item[0].Value })
+			if i < 0 {
+				return "", fmt.Errorf("coluna %q não existe na tabela %s", item[0].Value, name)
+			}
+			indexes = append(indexes, i)
+		}
+	}
+
+	headers := make([]string, len(indexes))
+	for j, i := range indexes {
+		headers[j] = table.Columns[i].Name
+	}
+	rows := make([][]string, len(table.Rows))
+	for r, row := range table.Rows {
+		rows[r] = make([]string, len(indexes))
+		for j, i := range indexes {
+			rows[r][j] = row[i]
+		}
+	}
+	return formatTable(headers, rows), nil
+}
+
+// parseList lê "(a, b c, ...)" e devolve os itens separados por vírgula.
+func parseList(tokens []sql.Token) ([][]sql.Token, error) {
 	n := len(tokens)
 	if n < 2 || tokens[0].Value != "(" || tokens[n-1].Value != ")" {
-		return nil, errors.New("esperava lista de colunas entre parênteses")
+		return nil, errors.New("esperava uma lista entre parênteses")
 	}
+	return splitCommas(tokens[1 : n-1])
+}
 
-	// Cada coluna ocupa "nome TIPO ," e a última não tem vírgula,
-	// então n colunas dão 3n-1 tokens.
-	inner := tokens[1 : n-1]
-	if len(inner)%3 != 2 {
-		return nil, errors.New("lista de colunas mal formada, use (nome TIPO, ...)")
+// splitCommas separa os tokens nas vírgulas. Item vazio é erro.
+func splitCommas(tokens []sql.Token) ([][]sql.Token, error) {
+	items := [][]sql.Token{nil}
+	for _, tok := range tokens {
+		if tok.Type == sql.Symbol && tok.Value == "," {
+			items = append(items, nil)
+			continue
+		}
+		last := len(items) - 1
+		items[last] = append(items[last], tok)
 	}
+	for _, item := range items {
+		if len(item) == 0 {
+			return nil, errors.New("lista com item vazio")
+		}
+	}
+	return items, nil
+}
 
-	var columns []storage.Column
-	for i := 0; i < len(inner); i += 3 {
-		name, typ := inner[i], inner[i+1]
-		if name.Type != sql.Identifier {
-			return nil, fmt.Errorf("nome de coluna inválido: %q", name.Value)
-		}
-		if typ.Value != "INT" && typ.Value != "TEXT" {
-			return nil, fmt.Errorf("tipo inválido para a coluna %s: %q (use INT ou TEXT)", name.Value, typ.Value)
-		}
-		if i+2 < len(inner) && inner[i+2].Value != "," {
-			return nil, fmt.Errorf("esperava vírgula depois da coluna %s", name.Value)
-		}
-		columns = append(columns, storage.Column{Name: name.Value, Type: typ.Value})
+// tokensText junta os tokens de volta em texto, para mensagens de erro.
+func tokensText(tokens []sql.Token) string {
+	words := make([]string, len(tokens))
+	for i, t := range tokens {
+		words[i] = t.Value
 	}
-	return columns, nil
+	return strings.Join(words, " ")
 }
 
 // match compara os tokens com um padrão. Cada item do padrão é um valor
