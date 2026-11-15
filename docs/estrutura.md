@@ -32,6 +32,8 @@ my_dbms/
 │       ├── storage_test.go
 │       ├── page.go       → formato em disco: cabeçalho, páginas com slots, registros
 │       └── page_test.go
+├── .github/workflows/
+│   └── ci.yml            → GitHub Actions: gofmt, go vet e testes no Linux e no Windows
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
 ├── my_dbms.conf          → parâmetros (data_dir etc.)

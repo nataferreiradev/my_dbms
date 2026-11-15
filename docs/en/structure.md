@@ -33,6 +33,8 @@ my_dbms/
 │       ├── storage_test.go
 │       ├── page.go       → on-disk format: header, slotted pages, records
 │       └── page_test.go
+├── .github/workflows/
+│   └── ci.yml            → GitHub Actions: gofmt, go vet and tests on Linux and Windows
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
 ├── my_dbms.conf          → parameters (data_dir etc.)

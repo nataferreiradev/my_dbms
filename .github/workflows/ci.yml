@@ -1,0 +1,40 @@
+# Roda os mesmos comandos do CLAUDE.md a cada push na main e em cada pull
+# request: gofmt, go vet e os testes, no Linux e no Windows.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Só no Linux: no Windows o checkout converte LF em CRLF e o gofmt
+      # acusaria todos os arquivos.
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Arquivos fora do gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
