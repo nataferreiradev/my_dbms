@@ -35,7 +35,7 @@ func execute(db *storage.DB, input string) (string, error) {
 func createTable(db *storage.DB, s *parser.CreateTable) (string, error) {
 	columns := make([]storage.Column, len(s.Columns))
 	for i, c := range s.Columns {
-		columns[i] = storage.Column{Name: c.Name, Type: c.Type}
+		columns[i] = storage.Column{Name: c.Name, Type: c.Type, NotNull: c.NotNull}
 	}
 	keys := make([]storage.Key, len(s.Keys))
 	for i, k := range s.Keys {
@@ -60,7 +60,7 @@ func insert(db *storage.DB, s *parser.Insert) (string, error) {
 		return "", fmt.Errorf("tabela %s tem %d colunas, mas vieram %d valores", s.Table, len(table.Columns), len(s.Values))
 	}
 
-	values := make([]string, len(s.Values))
+	values := make([]storage.Value, len(s.Values))
 	for i, lit := range s.Values {
 		values[i], err = literalValue(lit, table.Columns[i])
 		if err != nil {
@@ -75,17 +75,28 @@ func insert(db *storage.DB, s *parser.Insert) (string, error) {
 }
 
 // literalValue confere se o literal serve para a coluna e devolve o valor
-// como ele vai para o disco: número inteiro normalizado ou o texto.
-func literalValue(lit parser.Literal, col storage.Column) (string, error) {
+// como ele vai para o disco: NULL, número inteiro normalizado ou o texto.
+// NOT NULL é conferido pelo storage.
+func literalValue(lit parser.Literal, col storage.Column) (storage.Value, error) {
 	switch {
+	case lit.Kind == parser.Null:
+		return storage.Null, nil
 	case col.Type == "INT" && lit.Kind == parser.Number:
 		if n, err := strconv.Atoi(lit.Text); err == nil {
-			return strconv.Itoa(n), nil
+			return storage.Text(strconv.Itoa(n)), nil
 		}
 	case col.Type == "TEXT" && lit.Kind == parser.String:
-		return lit.Text, nil
+		return storage.Text(lit.Text), nil
 	}
-	return "", fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, lit.Text)
+	return storage.Value{}, fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, lit.Text)
+}
+
+// display é como um valor aparece na saída do SELECT.
+func display(v storage.Value) string {
+	if v.Null {
+		return "NULL"
+	}
+	return v.Text
 }
 
 func selectRows(db *storage.DB, s *parser.Select) (string, error) {
@@ -117,7 +128,7 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	for r, row := range table.Rows {
 		rows[r] = make([]string, len(indexes))
 		for j, i := range indexes {
-			rows[r][j] = row[i]
+			rows[r][j] = display(row[i])
 		}
 	}
 	return formatTable(headers, rows), nil

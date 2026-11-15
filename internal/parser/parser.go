@@ -46,7 +46,7 @@ type parser struct {
 
 // createTable lê
 //
-//	CREATE TABLE nome (coluna TIPO [PRIMARY KEY | UNIQUE], ...,
+//	CREATE TABLE nome (coluna TIPO [NOT NULL] [PRIMARY KEY | UNIQUE], ...,
 //	                   PRIMARY KEY (a, b), UNIQUE (c))
 func (p *parser) createTable() (*CreateTable, error) {
 	if err := p.expect("CREATE", "TABLE"); err != nil {
@@ -73,7 +73,8 @@ func (p *parser) createTable() (*CreateTable, error) {
 	return stmt, err
 }
 
-// columnDef lê "nome TIPO" seguido de PRIMARY KEY ou UNIQUE, se houver.
+// columnDef lê "nome TIPO" seguido de NOT NULL, PRIMARY KEY ou UNIQUE, em
+// qualquer ordem.
 func (p *parser) columnDef(stmt *CreateTable) error {
 	name, err := p.ident()
 	if err != nil {
@@ -83,15 +84,27 @@ func (p *parser) columnDef(stmt *CreateTable) error {
 	if !p.accept("INT") && !p.accept("TEXT") {
 		return p.unexpected("um tipo (INT ou TEXT)")
 	}
-	stmt.Columns = append(stmt.Columns, ColumnDef{Name: name, Type: typ})
+	col := ColumnDef{Name: name, Type: typ}
 
 	for {
+		if p.accept("NOT") {
+			if err := p.expect("NULL"); err != nil {
+				return err
+			}
+			col.NotNull = true
+			continue
+		}
 		primary, isKey, err := p.keyPrefix()
-		if err != nil || !isKey {
+		if err != nil {
 			return err
+		}
+		if !isKey {
+			break
 		}
 		stmt.Keys = append(stmt.Keys, KeyDef{Primary: primary, Columns: []string{name}})
 	}
+	stmt.Columns = append(stmt.Columns, col)
+	return nil
 }
 
 // keyPrefix consome PRIMARY KEY ou UNIQUE, se vier um deles.
@@ -153,16 +166,18 @@ func (p *parser) selectStmt() (*Select, error) {
 	return stmt, err
 }
 
-// literal lê um número ou uma string.
+// literal lê um número, uma string ou NULL.
 func (p *parser) literal() (Literal, error) {
 	t := p.peek()
-	switch t.Type {
-	case sql.Number:
+	switch {
+	case t.Type == sql.Number:
 		p.pos++
 		return Literal{Kind: Number, Text: t.Value}, nil
-	case sql.String:
+	case t.Type == sql.String:
 		p.pos++
 		return Literal{Kind: String, Text: t.Value}, nil
+	case p.accept("NULL"):
+		return Literal{Kind: Null, Text: "NULL"}, nil
 	}
 	return Literal{}, p.unexpected("um valor")
 }

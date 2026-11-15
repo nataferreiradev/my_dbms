@@ -40,11 +40,26 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
-			input: `INSERT INTO t VALUES (1, 'Ana', -2.5)`,
+			input: "CREATE TABLE t (id INT NOT NULL UNIQUE, nome TEXT PRIMARY KEY NOT NULL)",
+			want: &CreateTable{
+				Name: "t",
+				Columns: []ColumnDef{
+					{Name: "id", Type: "INT", NotNull: true},
+					{Name: "nome", Type: "TEXT", NotNull: true},
+				},
+				Keys: []KeyDef{
+					{Columns: []string{"id"}},
+					{Primary: true, Columns: []string{"nome"}},
+				},
+			},
+		},
+		{
+			input: `INSERT INTO t VALUES (1, 'Ana', -2.5, null)`,
 			want: &Insert{Table: "t", Values: []Literal{
 				{Kind: Number, Text: "1"},
 				{Kind: String, Text: "Ana"},
 				{Kind: Number, Text: "-2.5"},
+				{Kind: Null, Text: "NULL"},
 			}},
 		},
 		{
@@ -81,6 +96,7 @@ func TestParseErrors(t *testing.T) {
 		{input: "CREATE TABLE t (id FLOAT)", wantErr: `posição 20: esperava um tipo (INT ou TEXT), veio "FLOAT"`},
 		{input: "CREATE TABLE t (id INT nome TEXT)", wantErr: `esperava "," ou ")"`},
 		{input: "CREATE TABLE t (id INT PRIMARY)", wantErr: `esperava "KEY"`},
+		{input: "CREATE TABLE t (id INT NOT)", wantErr: `esperava "NULL"`},
 		{input: "CREATE TABLE t (id INT,)", wantErr: "esperava um nome"},
 		{input: "CREATE TABLE t ()", wantErr: "esperava um nome"},
 		{input: "CREATE TABLE t (id INT, PRIMARY KEY id)", wantErr: `esperava "("`},

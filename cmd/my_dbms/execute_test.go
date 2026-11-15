@@ -76,7 +76,7 @@ func TestKeys(t *testing.T) {
 		wantErr bool
 	}{
 		{input: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT UNIQUE, a INT, b INT, unique (a, b));", want: "tabela users criada"},
-		{input: "SELECT type, name, definition FROM _catalog;", want: "type        | name            | definition\n------------+-----------------+------------------------------\ntable       | users           | id INT,email TEXT,a INT,b INT\nprimary_key | users_pkey      | id\nunique      | users_email_key | email\nunique      | users_a_b_key   | a,b\n(4 linhas)"},
+		{input: "SELECT type, name, definition FROM _catalog;", want: "type        | name            | definition\n------------+-----------------+---------------------------------------\ntable       | users           | id INT NOT NULL,email TEXT,a INT,b INT\nprimary_key | users_pkey      | id\nunique      | users_email_key | email\nunique      | users_a_b_key   | a,b\n(4 linhas)"},
 		{input: `INSERT INTO users VALUES (1, "ana@x", 1, 1);`, want: "1 linha inserida"},
 		{input: `INSERT INTO users VALUES (01, "bia@x", 2, 2);`, wantErr: true},
 		{input: `INSERT INTO users VALUES (2, "ana@x", 2, 2);`, wantErr: true},
@@ -86,6 +86,37 @@ func TestKeys(t *testing.T) {
 		{input: "INSERT INTO pares VALUES (1, 2);", want: "1 linha inserida"},
 		{input: "INSERT INTO pares VALUES (2, 1);", want: "1 linha inserida"},
 		{input: "INSERT INTO pares VALUES (1, 2);", wantErr: true},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
+func TestNull(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, apelido TEXT UNIQUE);", want: "tabela p criada"},
+		{input: "INSERT INTO p VALUES (1, 'Ana', NULL);", want: "1 linha inserida"},
+		{input: "INSERT INTO p VALUES (2, 'Bia', NULL);", want: "1 linha inserida"},
+		{input: "INSERT INTO p VALUES (3, NULL, 'x');", wantErr: true},
+		{input: "INSERT INTO p VALUES (NULL, 'Caio', 'y');", wantErr: true},
+		{input: "INSERT INTO p VALUES (4, 'Dani', 'NULL');", want: "1 linha inserida"},
+		{input: "SELECT apelido FROM p;", want: "apelido\n-------\nNULL\nNULL\nNULL\n(3 linhas)"},
 	}
 
 	for _, s := range steps {

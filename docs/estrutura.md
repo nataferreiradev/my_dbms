@@ -99,14 +99,14 @@ O que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`:
 uma linha por objeto do banco, no formato `type,name,table_name,definition`.
 
 ```
-table,pessoas,pessoas,"id INT,email TEXT,nome TEXT"
+table,pessoas,pessoas,"id INT NOT NULL,email TEXT,nome TEXT"
 primary_key,pessoas_pkey,pessoas,id
 unique,pessoas_email_key,pessoas,email
 ```
 
 | `type` | `definition` |
 |---|---|
-| `table` | Colunas e tipos: `id INT,nome TEXT`. |
+| `table` | Colunas e tipos, com `NOT NULL` quando houver: `id INT NOT NULL,nome TEXT`. |
 | `primary_key` | Colunas da chave primária: `id` ou `a,b`. No máximo uma por tabela. |
 | `unique` | Colunas de uma chave única. |
 
@@ -119,13 +119,29 @@ No SQL, a chave vem depois do tipo da coluna ou como item próprio da lista,
 para chaves de várias colunas:
 
 ```sql
-CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT);
+CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT NOT NULL);
 CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
 ```
 
 Ainda não há índice: o `InsertRow` confere cada chave lendo a tabela inteira
 e recusa o registro se já existe outro com os mesmos valores nas colunas da
-chave.
+chave. Como no SQL padrão, colunas da chave primária viram `NOT NULL`, e
+`NULL` não é igual a nada, então uma chave `UNIQUE` aceita várias linhas com
+`NULL`.
+
+### NULL
+
+Na memória, cada célula é um `storage.Value`: um texto ou `NULL`. No disco,
+`NULL` é gravado como `\N` (a mesma convenção do `COPY` do PostgreSQL), e um
+texto que começa com `\` ganha mais uma `\` na frente, para o texto `\N`
+digitado pelo usuário não virar `NULL`:
+
+```
+1,\N
+2,\\N
+```
+
+A linha 1 tem `NULL`, a linha 2 tem o texto `\N`.
 
 O `Open` carrega o catálogo inteiro para a memória, e as operações consultam
 essa cópia. O schema do próprio catálogo fica fixo no código

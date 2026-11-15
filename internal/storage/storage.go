@@ -36,8 +36,24 @@ type DB struct {
 }
 
 type Column struct {
-	Name string
-	Type string
+	Name    string
+	Type    string
+	NotNull bool
+}
+
+// Value é o conteúdo de uma célula: um texto ou NULL. Números também são
+// guardados como texto, já normalizados.
+type Value struct {
+	Text string
+	Null bool
+}
+
+// Null é o valor NULL do SQL.
+var Null = Value{Null: true}
+
+// Text cria um valor que não é NULL.
+func Text(s string) Value {
+	return Value{Text: s}
 }
 
 // KeyKind diz que tipo de chave é. O valor é o que vai na coluna type do
@@ -64,7 +80,7 @@ type Schema struct {
 
 type Table struct {
 	Schema
-	Rows [][]string
+	Rows [][]Value
 }
 
 func Open(dir string) (*DB, error) {
@@ -153,6 +169,15 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 	if err != nil {
 		return err
 	}
+	// Coluna de chave primária nunca é NULL, como no SQL padrão.
+	columns = slices.Clone(columns)
+	for _, k := range keys {
+		if k.Kind == PrimaryKey {
+			for _, c := range k.Columns {
+				columns[columnIndex(columns, c)].NotNull = true
+			}
+		}
+	}
 
 	// Primeiro o arquivo de dados, depois o catálogo: se algo falhar no meio,
 	// sobra no máximo um arquivo que o catálogo não enxerga.
@@ -218,9 +243,9 @@ func nameKeys(table string, columns []Column, keys []Key) ([]Key, error) {
 	return named, nil
 }
 
-// InsertRow acrescenta um registro no fim da tabela. Os valores já devem
-// estar validados contra o schema; as chaves são conferidas aqui.
-func (db *DB) InsertRow(name string, values []string) error {
+// InsertRow acrescenta um registro no fim da tabela. Os tipos dos valores
+// já devem estar validados; NOT NULL e chaves são conferidos aqui.
+func (db *DB) InsertRow(name string, values []Value) error {
 	if isSystem(name) {
 		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
 	}
@@ -231,6 +256,11 @@ func (db *DB) InsertRow(name string, values []string) error {
 	if len(values) != len(schema.Columns) {
 		return fmt.Errorf("tabela %q tem %d colunas, mas vieram %d valores", name, len(schema.Columns), len(values))
 	}
+	for i, c := range schema.Columns {
+		if c.NotNull && values[i].Null {
+			return fmt.Errorf("a coluna %s não aceita NULL", c.Name)
+		}
+	}
 
 	if len(schema.Keys) > 0 {
 		rows, err := db.readRows(name, len(schema.Columns))
@@ -239,34 +269,42 @@ func (db *DB) InsertRow(name string, values []string) error {
 		}
 		// Sem índice ainda: cada chave é conferida varrendo a tabela inteira.
 		for _, k := range schema.Keys {
-			if err := checkKey(schema.Columns, k, rows, values); err != nil {
+			if err := checkKey(schema.Columns, k, decodeRows(rows), values); err != nil {
 				return err
 			}
 		}
 	}
-	return db.appendRows(name, [][]string{values})
+	return db.appendRows(name, [][]string{encodeRow(values)})
 }
 
 // checkKey devolve erro se alguma linha já tem, nas colunas da chave, os
-// mesmos valores que values.
-func checkKey(columns []Column, k Key, rows [][]string, values []string) error {
+// mesmos valores que values. Como no SQL, NULL não é igual a nada: uma chave
+// UNIQUE aceita várias linhas com NULL.
+func checkKey(columns []Column, k Key, rows [][]Value, values []Value) error {
 	positions := make([]int, len(k.Columns))
 	for i, c := range k.Columns {
 		positions[i] = columnIndex(columns, c)
 	}
 	want := pick(values, positions)
+	if slices.Contains(want, Null) {
+		return nil
+	}
 	for _, row := range rows {
 		if slices.Equal(pick(row, positions), want) {
+			texts := make([]string, len(want))
+			for i, v := range want {
+				texts[i] = v.Text
+			}
 			return fmt.Errorf("valor duplicado viola a chave %s: (%s) = (%s) já existe",
-				k.Name, strings.Join(k.Columns, ", "), strings.Join(want, ", "))
+				k.Name, strings.Join(k.Columns, ", "), strings.Join(texts, ", "))
 		}
 	}
 	return nil
 }
 
 // pick devolve os valores de row nas posições pedidas.
-func pick(row []string, positions []int) []string {
-	values := make([]string, len(positions))
+func pick(row []Value, positions []int) []Value {
+	values := make([]Value, len(positions))
 	for i, p := range positions {
 		values[i] = row[p]
 	}
@@ -287,7 +325,40 @@ func (db *DB) ReadTable(name string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Table{Schema: schema, Rows: rows}, nil
+	return &Table{Schema: schema, Rows: decodeRows(rows)}, nil
+}
+
+// No disco, NULL é gravado como \N. Um texto que começa com \ ganha mais uma
+// \ na frente, para o texto "\N" digitado pelo usuário não virar NULL.
+func encodeRow(row []Value) []string {
+	fields := make([]string, len(row))
+	for i, v := range row {
+		switch {
+		case v.Null:
+			fields[i] = `\N`
+		case strings.HasPrefix(v.Text, `\`):
+			fields[i] = `\` + v.Text
+		default:
+			fields[i] = v.Text
+		}
+	}
+	return fields
+}
+
+// decodeRows faz o caminho inverso de encodeRow para várias linhas.
+func decodeRows(rows [][]string) [][]Value {
+	values := make([][]Value, len(rows))
+	for r, row := range rows {
+		values[r] = make([]Value, len(row))
+		for i, field := range row {
+			if field == `\N` {
+				values[r][i] = Null
+			} else {
+				values[r][i] = Text(strings.TrimPrefix(field, `\`))
+			}
+		}
+	}
+	return values
 }
 
 func (db *DB) tablePath(name string) string {
@@ -348,11 +419,15 @@ func (db *DB) appendRows(name string, rows [][]string) error {
 	return file.Close()
 }
 
-// formatColumns escreve as colunas como vão para o catálogo: "id INT,nome TEXT".
+// formatColumns escreve as colunas como vão para o catálogo:
+// "id INT NOT NULL,nome TEXT".
 func formatColumns(columns []Column) string {
 	parts := make([]string, len(columns))
 	for i, c := range columns {
 		parts[i] = c.Name + " " + c.Type
+		if c.NotNull {
+			parts[i] += " NOT NULL"
+		}
 	}
 	return strings.Join(parts, ",")
 }
@@ -361,11 +436,15 @@ func formatColumns(columns []Column) string {
 func parseColumns(def string) ([]Column, error) {
 	var columns []Column
 	for _, part := range strings.Split(def, ",") {
-		name, typ, ok := strings.Cut(part, " ")
-		if !ok {
+		f := strings.Fields(part)
+		switch {
+		case len(f) == 2:
+			columns = append(columns, Column{Name: f[0], Type: f[1]})
+		case len(f) == 4 && f[2] == "NOT" && f[3] == "NULL":
+			columns = append(columns, Column{Name: f[0], Type: f[1], NotNull: true})
+		default:
 			return nil, fmt.Errorf("coluna mal formada %q", part)
 		}
-		columns = append(columns, Column{Name: name, Type: typ})
 	}
 	return columns, nil
 }

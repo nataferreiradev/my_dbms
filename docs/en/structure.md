@@ -101,14 +101,14 @@ What describes the tables lives in the **catalog**,
 `type,name,table_name,definition`.
 
 ```
-table,pessoas,pessoas,"id INT,email TEXT,nome TEXT"
+table,pessoas,pessoas,"id INT NOT NULL,email TEXT,nome TEXT"
 primary_key,pessoas_pkey,pessoas,id
 unique,pessoas_email_key,pessoas,email
 ```
 
 | `type` | `definition` |
 |---|---|
-| `table` | Columns and types: `id INT,nome TEXT`. |
+| `table` | Columns and types, with `NOT NULL` when present: `id INT NOT NULL,nome TEXT`. |
 | `primary_key` | Primary key columns: `id` or `a,b`. At most one per table. |
 | `unique` | Columns of a unique key. |
 
@@ -121,13 +121,28 @@ In SQL, a key goes after the column type, or as its own list item for
 multi-column keys:
 
 ```sql
-CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT);
+CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT NOT NULL);
 CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
 ```
 
 There is no index yet: `InsertRow` checks each key by reading the whole table
 and rejects the record if another one already has the same values in the
-key's columns.
+key's columns. As in standard SQL, primary key columns become `NOT NULL`, and
+`NULL` equals nothing, so a `UNIQUE` key accepts several rows with `NULL`.
+
+### NULL
+
+In memory, each cell is a `storage.Value`: a text or `NULL`. On disk, `NULL`
+is written as `\N` (the same convention as PostgreSQL's `COPY`), and a text
+starting with `\` gets one more `\` in front, so the text `\N` typed by the
+user doesn't become `NULL`:
+
+```
+1,\N
+2,\\N
+```
+
+Row 1 holds `NULL`, row 2 holds the text `\N`.
 
 `Open` loads the whole catalog into memory, and operations read that copy.
 The catalog's own schema is fixed in code (`catalogSchema`), so it can be
