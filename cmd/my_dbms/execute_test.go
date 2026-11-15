@@ -28,6 +28,8 @@ func TestExecute(t *testing.T) {
 		{input: "SELECT nome FROM users;", want: "nome\n------------\nAna\nSilva, Bruno\n(2 linhas)"},
 		{input: "SELECT nome, id, nome FROM users;", want: "nome         | id | nome\n-------------+----+-------------\nAna          | 1  | Ana\nSilva, Bruno | 7  | Silva, Bruno\n(2 linhas)"},
 		{input: "SELECT idade FROM users;", wantErr: true},
+		{input: "SELECT name, definition FROM _catalog;", want: "name  | definition\n------+-----------------\nusers | id INT,nome TEXT\n(1 linha)"},
+		{input: `INSERT INTO _catalog VALUES ("table", "x", "x", "id INT");`, wantErr: true},
 		{input: "DROP TABLE users;", wantErr: true},
 	}
 

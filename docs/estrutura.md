@@ -22,7 +22,7 @@ my_dbms/
 │   │   ├── lexer.go      → Lex(): string → []Token
 │   │   └── lexer_test.go
 │   └── storage/          → persistência em disco
-│       ├── storage.go    → DB: CreateTable, InsertRow, ReadTable
+│       ├── storage.go    → DB: catálogo, CreateTable, InsertRow, ReadTable
 │       └── storage_test.go
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
@@ -56,7 +56,7 @@ Chave desconhecida é erro, para um erro de digitação não passar em silêncio
   execute()            → casa SELECT ... FROM <identificador> e chama selectRows
         │
         ▼
-  storage.ReadTable()  → lê data/pessoas.marina (schema + linhas)
+  storage.ReadTable()  → schema do catálogo em memória + linhas de data/pessoas.marina
         │
         ▼
   selectRows()         → escolhe as colunas pedidas
@@ -71,7 +71,7 @@ Chave desconhecida é erro, para um erro de digitação não passar em silêncio
 |---|---|---|
 | `internal/config` | Lê o arquivo de parâmetros e aplica os padrões. | Não abre o banco nem conhece SQL. |
 | `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo. | Não sabe que existe disco nem tabela. |
-| `internal/storage` | Cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
+| `internal/storage` | Mantém o catálogo, cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
 | `cmd/my_dbms` | Liga os dois: recebe a linha, chama `Lex`, decide o comando, valida valores contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo. |
 
 `internal/` impede que código de fora do módulo importe esses pacotes, o que
@@ -79,14 +79,35 @@ nos deixa livres para mudar a API interna.
 
 ## Formato em disco
 
-Cada tabela é um arquivo CSV em `<data_dir>/<nome>.marina`, lido e escrito com
-`encoding/csv`. A primeira linha guarda o schema e as outras, os registros:
+Tudo é CSV, lido e escrito com `encoding/csv`. Cada tabela é um arquivo
+`<data_dir>/<nome>.marina` só com os registros:
 
 ```
-id INT,nome TEXT
 1,Ana
 2,"Silva, Bruno"
 ```
+
+O que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`:
+uma linha por objeto do banco, no formato `type,name,table_name,definition`.
+
+```
+table,pessoas,pessoas,"id INT,nome TEXT"
+```
+
+| `type` | `definition` |
+|---|---|
+| `table` | Colunas e tipos: `id INT,nome TEXT`. |
+
+O `Open` carrega o catálogo inteiro para a memória, e as operações consultam
+essa cópia. O schema do próprio catálogo fica fixo no código
+(`catalogSchema`), por isso ele pode ser lido como uma tabela qualquer:
+`SELECT * FROM _catalog;`. Nomes começando com `_` são reservados para o
+sistema: não dá para criar tabela com eles nem fazer `INSERT` neles.
+
+O `CREATE TABLE` cria primeiro o arquivo de dados e depois grava no catálogo.
+Se o programa cair no meio, sobra no máximo um arquivo que o catálogo não
+enxerga. Ele não é apagado nem sobrescrito: criar uma tabela com esse nome dá
+erro até alguém remover o arquivo.
 
 Os tipos aceitos são `INT` e `TEXT`. O CSV cuida de vírgulas e aspas dentro
 dos valores. O único caso especial é um registro com um só campo vazio, que é

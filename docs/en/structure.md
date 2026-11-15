@@ -23,7 +23,7 @@ my_dbms/
 │   │   ├── lexer.go      → Lex(): string → []Token
 │   │   └── lexer_test.go
 │   └── storage/          → on-disk persistence
-│       ├── storage.go    → DB: CreateTable, InsertRow, ReadTable
+│       ├── storage.go    → DB: catalog, CreateTable, InsertRow, ReadTable
 │       └── storage_test.go
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
@@ -57,7 +57,7 @@ an error, so a typo doesn't slip by silently.
   execute()            → matches SELECT ... FROM <identifier> and calls selectRows
         │
         ▼
-  storage.ReadTable()  → reads data/pessoas.marina (schema + rows)
+  storage.ReadTable()  → schema from the in-memory catalog + rows from data/pessoas.marina
         │
         ▼
   selectRows()         → picks the requested columns
@@ -72,7 +72,7 @@ an error, so a typo doesn't slip by silently.
 |---|---|---|
 | `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase. | Know that disks or tables exist. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
-| `internal/storage` | Creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
+| `internal/storage` | Maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
 | `cmd/my_dbms` | Connects the two: takes the line, calls `Lex`, picks the command, validates values against the schema, calls storage and formats the output. | Implement file-format rules. |
 
 `internal/` prevents code outside the module from importing these packages,
@@ -80,14 +80,36 @@ which leaves us free to change the internal API.
 
 ## On-disk format
 
-Each table is a CSV file at `<data_dir>/<name>.marina`, read and written with
-`encoding/csv`. The first line holds the schema and the rest are records:
+Everything is CSV, read and written with `encoding/csv`. Each table is a file
+at `<data_dir>/<name>.marina` holding only its records:
 
 ```
-id INT,nome TEXT
 1,Ana
 2,"Silva, Bruno"
 ```
+
+What describes the tables lives in the **catalog**,
+`<data_dir>/_catalog.marina`: one line per database object, in the format
+`type,name,table_name,definition`.
+
+```
+table,pessoas,pessoas,"id INT,nome TEXT"
+```
+
+| `type` | `definition` |
+|---|---|
+| `table` | Columns and types: `id INT,nome TEXT`. |
+
+`Open` loads the whole catalog into memory, and operations read that copy.
+The catalog's own schema is fixed in code (`catalogSchema`), so it can be
+read like any other table: `SELECT * FROM _catalog;`. Names starting with `_`
+are reserved for the system: you can't create a table with one or `INSERT`
+into it.
+
+`CREATE TABLE` creates the data file first and then writes to the catalog.
+If the program dies in between, at worst a file is left that the catalog
+doesn't see. It is never deleted or overwritten: creating a table with that
+name fails until someone removes the file.
 
 The accepted types are `INT` and `TEXT`. CSV takes care of commas and quotes
 inside values. The only special case is a record with a single empty field,
