@@ -14,13 +14,15 @@ func TestLoad(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "vazio usa padrão", content: "", want: Default()},
-		{name: "data_dir", content: "data_dir = meus_dados\n", want: Config{DataDir: "meus_dados"}},
-		{name: "sem espaços", content: "data_dir=x", want: Config{DataDir: "x"}},
-		{name: "comentários e CRLF", content: "# banco\r\n\r\ndata_dir = x\r\n", want: Config{DataDir: "x"}},
-		{name: "BOM", content: "\xef\xbb\xbfdata_dir = x", want: Config{DataDir: "x"}},
-		{name: "caminho com =", content: "data_dir = a=b", want: Config{DataDir: "a=b"}},
+		{name: "data_dir", content: "data_dir = meus_dados\n", want: Config{DataDir: "meus_dados", PageSize: 4096}},
+		{name: "sem espaços", content: "data_dir=x", want: Config{DataDir: "x", PageSize: 4096}},
+		{name: "comentários e CRLF", content: "# banco\r\n\r\ndata_dir = x\r\n", want: Config{DataDir: "x", PageSize: 4096}},
+		{name: "BOM", content: "\xef\xbb\xbfdata_dir = x", want: Config{DataDir: "x", PageSize: 4096}},
+		{name: "caminho com =", content: "data_dir = a=b", want: Config{DataDir: "a=b", PageSize: 4096}},
+		{name: "page_size", content: "page_size = 8192\ndata_dir = x", want: Config{DataDir: "x", PageSize: 8192}},
 		{name: "sem igual", content: "data_dir x", wantErr: true},
 		{name: "valor vazio", content: "data_dir =", wantErr: true},
+		{name: "page_size não numérico", content: "page_size = 4k", wantErr: true},
 		{name: "chave desconhecida", content: "porta = 5432", wantErr: true},
 	}
 

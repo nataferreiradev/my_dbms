@@ -1,11 +1,17 @@
 package storage
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// testPageSize é o menor tamanho aceito, para encher páginas com poucas
+// linhas.
+const testPageSize = 1024
 
 var userColumns = []Column{{Name: "id", Type: "INT"}, {Name: "nome", Type: "TEXT"}}
 
@@ -23,7 +29,7 @@ func insertOne(db *DB, table string, row []Value) error {
 }
 
 func TestCreateAndReadTable(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.TempDir(), testPageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,11 +56,12 @@ func TestCreateTableErrors(t *testing.T) {
 		{name: "nome vazio", table: "", columns: userColumns},
 		{name: "sem colunas", table: "users", columns: nil},
 		{name: "coluna repetida", table: "users", columns: []Column{{Name: "id", Type: "INT"}, {Name: "id", Type: "TEXT"}}},
+		{name: "tipo desconhecido", table: "users", columns: []Column{{Name: "id", Type: "FLOAT"}}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			if err := db.CreateTable(tt.table, tt.columns, nil); err == nil {
 				t.Error("esperava erro")
 			}
@@ -63,7 +70,7 @@ func TestCreateTableErrors(t *testing.T) {
 }
 
 func TestCreateTableTwice(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 	db.CreateTable("users", userColumns, nil)
 
 	if err := db.CreateTable("users", userColumns, nil); err == nil {
@@ -82,11 +89,12 @@ func TestInsertRow(t *testing.T) {
 		{name: "campo único vazio", columns: []Column{{Name: "s", Type: "TEXT"}}, rows: [][]Value{texts(""), texts("x")}},
 		{name: "NULL", columns: userColumns, rows: [][]Value{{Text("1"), Null}, {Null, Text("")}}},
 		{name: "texto parecido com NULL", columns: userColumns, rows: [][]Value{texts("1", `\N`), texts("2", `\\x`), texts("3", `\`)}},
+		{name: "INT nos extremos", columns: userColumns, rows: [][]Value{texts("-9223372036854775808", "a"), texts("9223372036854775807", "b"), texts("0", "c")}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			if err := db.CreateTable("t", tt.columns, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +129,7 @@ func TestInsertRowErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			db.CreateTable("t", columns, nil)
 			if err := insertOne(db, tt.table, tt.row); err == nil {
 				t.Error("esperava erro")
@@ -146,7 +154,7 @@ func TestInsertRowsBatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			db.CreateTable("t", userColumns, keys)
 			insertOne(db, "t", texts("1", "Ana"))
 
@@ -177,7 +185,7 @@ func TestReplaceRows(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			db.CreateTable("t", userColumns, keys)
 			before := [][]Value{texts("1", "Ana")}
 			db.InsertRows("t", before)
@@ -200,7 +208,7 @@ func TestReplaceRows(t *testing.T) {
 
 func TestDropTable(t *testing.T) {
 	dir := t.TempDir()
-	db, _ := Open(dir)
+	db, _ := Open(dir, testPageSize)
 	db.CreateTable("users", userColumns, []Key{{Kind: PrimaryKey, Columns: []string{"id"}}})
 	db.CreateTable("outra", userColumns, nil)
 	insertOne(db, "users", texts("1", "Ana"))
@@ -213,7 +221,7 @@ func TestDropTable(t *testing.T) {
 	}
 
 	// Reabrir confere que o catálogo no disco ficou sem a tabela e a chave.
-	db, err := Open(dir)
+	db, err := Open(dir, testPageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +240,7 @@ func TestDropTable(t *testing.T) {
 }
 
 func TestDropTableErrors(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 
 	if err := db.DropTable("nada"); err == nil {
 		t.Error("esperava erro ao apagar tabela inexistente")
@@ -246,7 +254,7 @@ func TestDropTableErrors(t *testing.T) {
 }
 
 func TestTableSchema(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 	db.CreateTable("users", userColumns, nil)
 
 	schema, err := db.TableSchema("users")
@@ -265,7 +273,7 @@ func TestTableSchema(t *testing.T) {
 }
 
 func TestReadMissingTable(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 
 	if _, err := db.ReadTable("nada"); err == nil {
 		t.Error("esperava erro ao ler tabela inexistente")
@@ -274,7 +282,7 @@ func TestReadMissingTable(t *testing.T) {
 
 func TestCatalogSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
-	db, _ := Open(dir)
+	db, _ := Open(dir, testPageSize)
 	columns := []Column{{Name: "id", Type: "INT", NotNull: true}, {Name: "nome", Type: "TEXT"}}
 	if err := db.CreateTable("users", columns, nil); err != nil {
 		t.Fatal(err)
@@ -283,7 +291,7 @@ func TestCatalogSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := Open(dir)
+	db, err := Open(dir, testPageSize)
 	if err != nil {
 		t.Fatalf("Open de novo: %v", err)
 	}
@@ -300,7 +308,7 @@ func TestCatalogSurvivesReopen(t *testing.T) {
 }
 
 func TestReadCatalog(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 	db.CreateTable("users", userColumns, []Key{{Kind: PrimaryKey, Columns: []string{"id"}}})
 
 	table, err := db.ReadTable("_catalog")
@@ -317,7 +325,7 @@ func TestReadCatalog(t *testing.T) {
 }
 
 func TestSystemNames(t *testing.T) {
-	db, _ := Open(t.TempDir())
+	db, _ := Open(t.TempDir(), testPageSize)
 
 	if err := db.CreateTable("_catalog", userColumns, nil); err == nil {
 		t.Error("esperava erro ao criar tabela com nome reservado")
@@ -329,7 +337,7 @@ func TestSystemNames(t *testing.T) {
 
 func TestCreateTableOrphanFile(t *testing.T) {
 	dir := t.TempDir()
-	db, _ := Open(dir)
+	db, _ := Open(dir, testPageSize)
 	os.WriteFile(filepath.Join(dir, "users.marina"), []byte("1,Ana\n"), 0o644)
 
 	if err := db.CreateTable("users", userColumns, nil); err == nil {
@@ -342,7 +350,7 @@ func TestCreateTableOrphanFile(t *testing.T) {
 
 func TestCreateTableKeys(t *testing.T) {
 	dir := t.TempDir()
-	db, _ := Open(dir)
+	db, _ := Open(dir, testPageSize)
 	columns := []Column{{Name: "id", Type: "INT"}, {Name: "email", Type: "TEXT"}, {Name: "a", Type: "INT"}, {Name: "b", Type: "INT"}}
 	keys := []Key{
 		{Kind: PrimaryKey, Columns: []string{"id"}},
@@ -358,7 +366,7 @@ func TestCreateTableKeys(t *testing.T) {
 		{Name: "users_email_key", Kind: Unique, Columns: []string{"email"}},
 		{Name: "users_a_b_key", Kind: Unique, Columns: []string{"a", "b"}},
 	}
-	db, _ = Open(dir)
+	db, _ = Open(dir, testPageSize)
 	table, err := db.ReadTable("users")
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +398,7 @@ func TestCreateTableKeyErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			db, _ := Open(dir)
+			db, _ := Open(dir, testPageSize)
 			if err := db.CreateTable("users", userColumns, tt.keys); err == nil {
 				t.Fatal("esperava erro")
 			}
@@ -422,7 +430,7 @@ func TestInsertRowKeys(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _ := Open(t.TempDir())
+			db, _ := Open(t.TempDir(), testPageSize)
 			if err := db.CreateTable("t", columns, keys); err != nil {
 				t.Fatal(err)
 			}
@@ -452,22 +460,166 @@ func TestInsertRowKeys(t *testing.T) {
 func TestOpenCorruptCatalog(t *testing.T) {
 	tests := []struct {
 		name    string
-		catalog string
+		catalog [][]Value
 	}{
-		{name: "tipo desconhecido", catalog: "view,v,v,x\n"},
-		{name: "campos a menos", catalog: "table,users\n"},
-		{name: "coluna sem tipo", catalog: "table,users,users,id\n"},
-		{name: "coluna com sobra", catalog: "table,users,users,id INT NULL\n"},
-		{name: "chave sem tabela", catalog: "primary_key,users_pkey,users,id\n"},
-		{name: "chave com coluna inexistente", catalog: "table,users,users,id INT\nunique,users_x_key,users,x\n"},
+		{name: "tipo desconhecido", catalog: [][]Value{catalogRow("view", "v", "v", "x")}},
+		{name: "coluna sem tipo", catalog: [][]Value{catalogRow("table", "users", "users", "id")}},
+		{name: "coluna com sobra", catalog: [][]Value{catalogRow("table", "users", "users", "id INT NULL")}},
+		{name: "chave sem tabela", catalog: [][]Value{catalogRow("primary_key", "users_pkey", "users", "id")}},
+		{name: "chave com coluna inexistente", catalog: [][]Value{
+			catalogRow("table", "users", "users", "id INT"),
+			catalogRow("unique", "users_x_key", "users", "x"),
+		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			os.WriteFile(filepath.Join(dir, "_catalog.marina"), []byte(tt.catalog), 0o644)
-			if _, err := Open(dir); err == nil {
+			db := &DB{dir: dir, pageSize: testPageSize}
+			if err := db.writeRows(catalogName, catalogSchema.Columns, tt.catalog); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, testPageSize); err == nil {
 				t.Error("esperava erro")
+			}
+		})
+	}
+}
+
+// rawFile monta um arquivo .marina byte a byte: a página 0 com a versão e o
+// page_size pedidos, seguida de rest.
+func rawFile(version, pageSize uint16, rest ...[]byte) []byte {
+	data := make([]byte, testPageSize)
+	copy(data, "MRNA")
+	binary.LittleEndian.PutUint16(data[4:], version)
+	binary.LittleEndian.PutUint16(data[6:], pageSize)
+	for _, r := range rest {
+		data = append(data, r...)
+	}
+	return data
+}
+
+func TestOpenBadCatalogFile(t *testing.T) {
+	badHeader := newPage(testPageSize)
+	binary.LittleEndian.PutUint16(badHeader[0:], 1000) // 1000 slots não cabem
+	badRecord := newPage(testPageSize)
+	addRecord(badRecord, []byte{0}) // só o bitmap: falta o primeiro TEXT
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "vazio", data: nil},
+		{name: "formato antigo, em CSV", data: []byte("table,users,users,id INT\n")},
+		{name: "versão desconhecida", data: rawFile(2, testPageSize)},
+		{name: "page_size diferente", data: rawFile(1, 2048)},
+		{name: "página cortada", data: rawFile(1, testPageSize, make([]byte, 10))},
+		{name: "cabeçalho da página inválido", data: rawFile(1, testPageSize, badHeader)},
+		{name: "registro cortado", data: rawFile(1, testPageSize, badRecord)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "_catalog.marina"), tt.data, 0o644)
+			if _, err := Open(dir, testPageSize); err == nil {
+				t.Error("esperava erro")
+			}
+		})
+	}
+}
+
+func TestOpenPageSize(t *testing.T) {
+	for _, size := range []int{0, 512, 1000, 3000, 65536} {
+		if _, err := Open(t.TempDir(), size); err == nil {
+			t.Errorf("Open com page_size %d: esperava erro", size)
+		}
+	}
+
+	dir := t.TempDir()
+	if _, err := Open(dir, 2048); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir, 4096); err == nil {
+		t.Error("esperava erro ao abrir com page_size diferente do banco")
+	}
+	if _, err := Open(dir, 2048); err != nil {
+		t.Errorf("abrir de novo com o mesmo page_size: %v", err)
+	}
+}
+
+func TestManyPages(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(dir, testPageSize)
+	db.CreateTable("t", userColumns, nil)
+
+	var rows [][]Value
+	for i := range 100 {
+		rows = append(rows, []Value{Text(strings.Repeat("9", i%10+1)), Text(strings.Repeat("x", i))})
+	}
+	// Em dois INSERTs, para o segundo continuar a última página do primeiro.
+	if err := db.InsertRows("t", rows[:30]); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertRows("t", rows[30:]); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "t.marina")
+	info, _ := os.Stat(path)
+	if info.Size()%testPageSize != 0 || info.Size()/testPageSize < 5 {
+		t.Errorf("arquivo com %d bytes: esperava várias páginas de %d", info.Size(), testPageSize)
+	}
+
+	db, _ = Open(dir, testPageSize)
+	table, err := db.ReadTable("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(table.Rows, rows) {
+		t.Errorf("linhas lidas diferentes das gravadas: %d de %d", len(table.Rows), len(rows))
+	}
+
+	// Regravar com menos linhas encolhe o arquivo.
+	if err := db.ReplaceRows("t", rows[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(path); info.Size() != 2*testPageSize {
+		t.Errorf("arquivo com %d bytes, want %d (cabeçalho + 1 página)", info.Size(), 2*testPageSize)
+	}
+}
+
+func TestRecordSizeLimit(t *testing.T) {
+	// Uma coluna TEXT: 1 byte de bitmap + 2 de tamanho + o texto. O máximo é
+	// a página menos o cabeçalho dela (4) e um slot (4): 1016 bytes.
+	columns := []Column{{Name: "s", Type: "TEXT"}}
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "cabe exato", size: 1013},
+		{name: "um byte a mais", size: 1014, wantErr: true},
+		{name: "muito maior", size: 5000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, _ := Open(t.TempDir(), testPageSize)
+			db.CreateTable("t", columns, nil)
+			insertOne(db, "t", texts("a"))
+
+			err := db.InsertRows("t", [][]Value{texts("b"), texts(strings.Repeat("x", tt.size))})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("InsertRows erro = %v, wantErr %v", err, tt.wantErr)
+			}
+			want := 3
+			if tt.wantErr {
+				want = 1
+			}
+			table, _ := db.ReadTable("t")
+			if len(table.Rows) != want {
+				t.Errorf("%d linhas, want %d", len(table.Rows), want)
 			}
 		})
 	}

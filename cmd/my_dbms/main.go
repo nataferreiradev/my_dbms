@@ -22,7 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := storage.Open(cfg.DataDir)
+	db, err := storage.Open(cfg.DataDir, cfg.PageSize)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao abrir banco:", err)
 		os.Exit(1)

@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"bytes"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,12 +25,13 @@ var catalogSchema = Schema{Columns: []Column{
 	{Name: "definition", Type: "TEXT"},
 }}
 
-// DB guarda cada tabela como um arquivo CSV dentro de dir, só com os
-// registros. O que descreve os objetos do banco fica no catálogo
-// (_catalog.marina), que é carregado para a memória no Open.
+// DB guarda cada tabela como um arquivo de páginas dentro de dir, só com os
+// registros (o formato está em page.go). O que descreve os objetos do banco
+// fica no catálogo (_catalog.marina), que é carregado para a memória no Open.
 type DB struct {
-	dir    string
-	tables map[string]Schema
+	dir      string
+	pageSize int
+	tables   map[string]Schema
 }
 
 type Column struct {
@@ -83,18 +82,37 @@ type Table struct {
 	Rows [][]Value
 }
 
-func Open(dir string) (*DB, error) {
+// Open abre o banco em dir. Num banco novo, cria a pasta e o catálogo vazio.
+// O pageSize vale para o banco inteiro e fica gravado nos arquivos: abrir um
+// banco existente com outro valor é erro.
+func Open(dir string, pageSize int) (*DB, error) {
+	if err := checkPageSize(pageSize); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	db := &DB{dir: dir, tables: map[string]Schema{catalogName: catalogSchema}}
+	db := &DB{dir: dir, pageSize: pageSize, tables: map[string]Schema{catalogName: catalogSchema}}
 
-	// Banco novo: começa com o catálogo vazio.
-	file, err := os.OpenFile(db.tablePath(catalogName), os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	path := db.tablePath(catalogName)
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		// Banco novo: começa com o catálogo vazio.
+		if err := writePages(path, pageSize, nil); err != nil {
+			return nil, err
+		}
+	case err != nil:
 		return nil, err
+	default:
+		size, err := readHeader(data)
+		if err != nil {
+			return nil, fmt.Errorf("catálogo %s: %w", path, err)
+		}
+		if size != pageSize {
+			return nil, fmt.Errorf("o banco foi criado com page_size = %d e não pode ser aberto com %d", size, pageSize)
+		}
 	}
-	file.Close()
 
 	if err := db.loadCatalog(); err != nil {
 		return nil, err
@@ -105,18 +123,18 @@ func Open(dir string) (*DB, error) {
 // loadCatalog lê o catálogo para a memória. Cada linha é um objeto do banco,
 // e a coluna type diz qual é:
 //
-//	type,name,table_name,definition
-//	table,users,users,"id INT,nome TEXT"
-//	primary_key,users_pkey,users,id
+//	type        | name       | table_name | definition
+//	table       | users      | users      | id INT,nome TEXT
+//	primary_key | users_pkey | users      | id
 //
 // Uma chave sempre vem depois da linha da tabela dela.
 func (db *DB) loadCatalog() error {
-	rows, err := db.readRows(catalogName, len(catalogSchema.Columns))
+	rows, err := db.readRows(catalogName, catalogSchema.Columns)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		kind, name, tableName, def := row[0], row[1], row[2], row[3]
+		kind, name, tableName, def := row[0].Text, row[1].Text, row[2].Text, row[3].Text
 		switch kind {
 		case kindTable:
 			columns, err := parseColumns(def)
@@ -164,6 +182,9 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 			return fmt.Errorf("coluna %q repetida", c.Name)
 		}
 		seen[c.Name] = true
+		if c.Type != "INT" && c.Type != "TEXT" {
+			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT ou TEXT)", c.Name, c.Type)
+		}
 	}
 	keys, err := nameKeys(name, columns, keys)
 	if err != nil {
@@ -190,17 +211,26 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 		return err
 	}
 	file.Close()
-
-	records := [][]string{{kindTable, name, name, formatColumns(columns)}}
-	for _, k := range keys {
-		records = append(records, []string{string(k.Kind), k.Name, name, strings.Join(k.Columns, ",")})
+	if err := writePages(path, db.pageSize, nil); err != nil {
+		os.Remove(path)
+		return err
 	}
-	if err := db.appendRows(catalogName, records); err != nil {
+
+	records := [][]Value{catalogRow(kindTable, name, name, formatColumns(columns))}
+	for _, k := range keys {
+		records = append(records, catalogRow(string(k.Kind), k.Name, name, strings.Join(k.Columns, ",")))
+	}
+	if err := db.appendRows(catalogName, catalogSchema.Columns, records); err != nil {
 		os.Remove(path)
 		return err
 	}
 	db.tables[name] = Schema{Columns: columns, Keys: keys}
 	return nil
+}
+
+// catalogRow monta uma linha do catálogo.
+func catalogRow(kind, name, table, def string) []Value {
+	return []Value{Text(kind), Text(name), Text(table), Text(def)}
 }
 
 // nameKeys confere as chaves da tabela e devolve uma cópia com o Name de
@@ -273,20 +303,15 @@ func (db *DB) InsertRows(name string, rows [][]Value) error {
 	}
 
 	if len(schema.Keys) > 0 {
-		existing, err := db.readRows(name, len(schema.Columns))
+		existing, err := db.readRows(name, schema.Columns)
 		if err != nil {
 			return err
 		}
-		if err := checkKeys(schema, append(decodeRows(existing), rows...)); err != nil {
+		if err := checkKeys(schema, append(existing, rows...)); err != nil {
 			return err
 		}
 	}
-
-	encoded := make([][]string, len(rows))
-	for i, row := range rows {
-		encoded[i] = encodeRow(row)
-	}
-	return db.appendRows(name, encoded)
+	return db.appendRows(name, schema.Columns, rows)
 }
 
 // ReplaceRows troca todos os registros da tabela por rows. É o que DELETE e
@@ -306,12 +331,7 @@ func (db *DB) ReplaceRows(name string, rows [][]Value) error {
 	if err := checkKeys(schema, rows); err != nil {
 		return err
 	}
-
-	encoded := make([][]string, len(rows))
-	for i, row := range rows {
-		encoded[i] = encodeRow(row)
-	}
-	return db.writeRows(name, encoded)
+	return db.writeRows(name, schema.Columns, rows)
 }
 
 // DropTable apaga a tabela: as linhas dela e das chaves dela no catálogo, e
@@ -324,12 +344,12 @@ func (db *DB) DropTable(name string) error {
 		return err
 	}
 
-	catalog, err := db.readRows(catalogName, len(catalogSchema.Columns))
+	catalog, err := db.readRows(catalogName, catalogSchema.Columns)
 	if err != nil {
 		return err
 	}
-	kept := slices.DeleteFunc(catalog, func(row []string) bool { return row[2] == name })
-	if err := db.writeRows(catalogName, kept); err != nil {
+	kept := slices.DeleteFunc(catalog, func(row []Value) bool { return row[2].Text == name })
+	if err := db.writeRows(catalogName, catalogSchema.Columns, kept); err != nil {
 		return err
 	}
 	delete(db.tables, name)
@@ -406,44 +426,11 @@ func (db *DB) ReadTable(name string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.readRows(name, len(schema.Columns))
+	rows, err := db.readRows(name, schema.Columns)
 	if err != nil {
 		return nil, err
 	}
-	return &Table{Schema: schema, Rows: decodeRows(rows)}, nil
-}
-
-// No disco, NULL é gravado como \N. Um texto que começa com \ ganha mais uma
-// \ na frente, para o texto "\N" digitado pelo usuário não virar NULL.
-func encodeRow(row []Value) []string {
-	fields := make([]string, len(row))
-	for i, v := range row {
-		switch {
-		case v.Null:
-			fields[i] = `\N`
-		case strings.HasPrefix(v.Text, `\`):
-			fields[i] = `\` + v.Text
-		default:
-			fields[i] = v.Text
-		}
-	}
-	return fields
-}
-
-// decodeRows faz o caminho inverso de encodeRow para várias linhas.
-func decodeRows(rows [][]string) [][]Value {
-	values := make([][]Value, len(rows))
-	for r, row := range rows {
-		values[r] = make([]Value, len(row))
-		for i, field := range row {
-			if field == `\N` {
-				values[r][i] = Null
-			} else {
-				values[r][i] = Text(strings.TrimPrefix(field, `\`))
-			}
-		}
-	}
-	return values
+	return &Table{Schema: schema, Rows: rows}, nil
 }
 
 func (db *DB) tablePath(name string) string {
@@ -455,74 +442,75 @@ func isSystem(name string) bool {
 	return strings.HasPrefix(name, "_")
 }
 
-// readRows lê todos os registros de um arquivo de tabela. Registro com
-// número de campos diferente de fields é erro.
-func (db *DB) readRows(name string, fields int) ([][]string, error) {
-	file, err := os.Open(db.tablePath(name))
+// readRows lê todos os registros de um arquivo de tabela, página por página,
+// na ordem dos slots.
+func (db *DB) readRows(name string, columns []Column) ([][]Value, error) {
+	pages, err := readPages(db.tablePath(name), db.pageSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tabela %q: %w", name, err)
 	}
-	defer file.Close()
 
-	r := csv.NewReader(file)
-	r.FieldsPerRecord = fields
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("tabela %q corrompida: %w", name, err)
+	var rows [][]Value
+	for i, page := range pages {
+		records, err := pageRecords(page)
+		if err != nil {
+			return nil, fmt.Errorf("tabela %q corrompida, página %d: %w", name, i+1, err)
+		}
+		for j, rec := range records {
+			row, err := decodeRecord(columns, rec)
+			if err != nil {
+				return nil, fmt.Errorf("tabela %q corrompida, página %d, slot %d: %w", name, i+1, j, err)
+			}
+			rows = append(rows, row)
+		}
 	}
 	return rows, nil
 }
 
-// appendRows acrescenta registros no fim de um arquivo de tabela, com uma
-// única escrita.
-func (db *DB) appendRows(name string, rows [][]string) error {
-	data, err := encodeCSV(rows)
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(db.tablePath(name), os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
-}
-
-// writeRows troca o conteúdo de um arquivo de tabela. Grava num arquivo
-// temporário e renomeia por cima do original: se o programa cair no meio,
-// o original continua inteiro.
-func (db *DB) writeRows(name string, rows [][]string) error {
-	data, err := encodeCSV(rows)
-	if err != nil {
-		return err
-	}
+// appendRows acrescenta registros depois do último: enche a última página
+// antes de abrir outra.
+func (db *DB) appendRows(name string, columns []Column, rows [][]Value) error {
 	path := db.tablePath(name)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	pages, err := readPages(path, db.pageSize)
+	if err != nil {
+		return fmt.Errorf("tabela %q: %w", name, err)
+	}
+	pages, err = db.addRows(pages, columns, rows)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return writePages(path, db.pageSize, pages)
 }
 
-// encodeCSV escreve os registros em CSV.
-func encodeCSV(rows [][]string) ([]byte, error) {
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	for _, row := range rows {
-		// O csv escreve um único campo vazio como linha vazia, e o leitor pula
-		// linhas vazias: o registro sumiria. Com aspas ele vira "" e sobrevive.
-		if len(row) == 1 && row[0] == "" {
-			w.Flush()
-			buf.WriteString("\"\"\n")
-			continue
-		}
-		w.Write(row)
+// writeRows troca todos os registros de um arquivo de tabela por rows.
+func (db *DB) writeRows(name string, columns []Column, rows [][]Value) error {
+	pages, err := db.addRows(nil, columns, rows)
+	if err != nil {
+		return err
 	}
-	w.Flush()
-	return buf.Bytes(), w.Error()
+	return writePages(db.tablePath(name), db.pageSize, pages)
+}
+
+// addRows grava as linhas nas páginas, a partir da última. Quando uma
+// página enche, abre outra. Um registro que não cabe numa página vazia é
+// erro, e nada é gravado no disco.
+func (db *DB) addRows(pages [][]byte, columns []Column, rows [][]Value) ([][]byte, error) {
+	limit := db.pageSize - pageHeaderSize - slotSize
+	for _, row := range rows {
+		rec, err := encodeRecord(columns, row)
+		if err != nil {
+			return nil, err
+		}
+		if len(rec) > limit {
+			return nil, fmt.Errorf("registro de %d bytes não cabe numa página de %d bytes (máximo %d por registro)", len(rec), db.pageSize, limit)
+		}
+		if len(pages) == 0 || !addRecord(pages[len(pages)-1], rec) {
+			page := newPage(db.pageSize)
+			addRecord(page, rec)
+			pages = append(pages, page)
+		}
+	}
+	return pages, nil
 }
 
 // formatColumns escreve as colunas como vão para o catálogo:

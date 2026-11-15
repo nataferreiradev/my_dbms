@@ -8,7 +8,7 @@ import (
 )
 
 func TestExecute(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCreateTableInvalidColumns(t *testing.T) {
 	}
 
 	for _, input := range inputs {
-		db, _ := storage.Open(t.TempDir())
+		db, _ := storage.Open(t.TempDir(), 4096)
 		if _, err := execute(db, input); err == nil {
 			t.Errorf("execute(%q) deveria falhar", input)
 		}
@@ -69,7 +69,7 @@ func TestCreateTableInvalidColumns(t *testing.T) {
 }
 
 func TestKeys(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestKeys(t *testing.T) {
 }
 
 func TestNull(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestNull(t *testing.T) {
 }
 
 func TestInsertColumnsAndRows(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestInsertColumnsAndRows(t *testing.T) {
 }
 
 func TestWhere(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestWhere(t *testing.T) {
 }
 
 func TestUpdateDelete(t *testing.T) {
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestUpdateDelete(t *testing.T) {
 }
 
 func TestWhereEmptyTableStillValidates(t *testing.T) {
-	db, _ := storage.Open(t.TempDir())
+	db, _ := storage.Open(t.TempDir(), 4096)
 	execute(db, "CREATE TABLE p (id INT);")
 
 	if _, err := execute(db, "SELECT * FROM p WHERE nada = 1"); err == nil {
@@ -303,7 +303,7 @@ func TestCreateTableInvalidKeys(t *testing.T) {
 	}
 
 	for _, input := range inputs {
-		db, _ := storage.Open(t.TempDir())
+		db, _ := storage.Open(t.TempDir(), 4096)
 		if _, err := execute(db, input); err == nil {
 			t.Errorf("execute(%q) deveria falhar", input)
 		}
@@ -323,7 +323,7 @@ func TestInsertInvalid(t *testing.T) {
 	}
 
 	for _, input := range inputs {
-		db, _ := storage.Open(t.TempDir())
+		db, _ := storage.Open(t.TempDir(), 4096)
 		if _, err := execute(db, "CREATE TABLE users (id INT, nome TEXT);"); err != nil {
 			t.Fatal(err)
 		}

@@ -29,7 +29,9 @@ my_dbms/
 │   └── storage/          → persistência em disco
 │       ├── storage.go    → DB: catálogo, CreateTable, InsertRows, ReadTable,
 │       │                   ReplaceRows, DropTable
-│       └── storage_test.go
+│       ├── storage_test.go
+│       ├── page.go       → formato em disco: cabeçalho, páginas com slots, registros
+│       └── page_test.go
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
 ├── my_dbms.conf          → parâmetros (data_dir etc.)
@@ -45,6 +47,7 @@ Se o arquivo não existir, valem os padrões de `config.Default()`.
 | Parâmetro | Padrão | O que é |
 |---|---|---|
 | `data_dir` | `data` | Pasta dos arquivos das tabelas. Caminho relativo parte da pasta onde o programa roda. |
+| `page_size` | `4096` | Tamanho das páginas dos arquivos, em bytes: potência de 2 entre 1024 e 32768. Fica gravado no banco quando ele é criado; abrir um banco existente com outro valor é erro. |
 
 Para adicionar um parâmetro: um campo em `Config`, o valor padrão em
 `Default()`, um `case` em `Load()` e uma linha comentada no `my_dbms.conf`.
@@ -102,7 +105,7 @@ DROP TABLE p;
 | `internal/config` | Lê o arquivo de parâmetros e aplica os padrões. | Não abre o banco nem conhece SQL. |
 | `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo e tira as aspas das strings. | Não sabe que existe disco nem tabela. |
 | `internal/parser` | Confere a gramática e transforma os tokens em uma AST (`Statement`). Erros de sintaxe saem daqui, com a posição. | Não sabe se a tabela ou a coluna existe. |
-| `internal/storage` | Mantém o catálogo, cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
+| `internal/storage` | Define o formato em disco, mantém o catálogo, cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
 | `cmd/my_dbms` | Liga tudo: recebe a linha, chama `Lex` e `Parse`, roda o `Statement` contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo nem de gramática. |
 
 `internal/` impede que código de fora do módulo importe esses pacotes, o que
@@ -110,21 +113,82 @@ nos deixa livres para mudar a API interna.
 
 ## Formato em disco
 
-Tudo é CSV, lido e escrito com `encoding/csv`. Cada tabela é um arquivo
-`<data_dir>/<nome>.marina` só com os registros:
+Cada tabela é um arquivo `<data_dir>/<nome>.marina` só com os registros. O
+que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`,
+gravado no mesmo formato. O código do formato está em
+`internal/storage/page.go`.
+
+### Páginas
+
+O arquivo é dividido em **páginas** de `page_size` bytes (4096 por padrão),
+como no SQLite e no PostgreSQL: a página N começa no byte `N × page_size`. A
+página 0 é o cabeçalho do arquivo, e as outras guardam os registros:
 
 ```
-1,Ana
-2,"Silva, Bruno"
+página 0   "MRNA" | versão (2 bytes) | page_size (2 bytes) | zeros até o fim
+
+página N   ┌───────────────────────────────────────────────────────┐
+           │ nº de slots | início dos registros | slot 0 | slot 1 …│  os slots crescem →
+           │                                                       │
+           │                    espaço livre                       │
+           │                                                       │
+           │                  … | registro 1 | registro 0          │  ← os registros crescem do fim
+           └───────────────────────────────────────────────────────┘
 ```
 
-O que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`:
-uma linha por objeto do banco, no formato `type,name,table_name,definition`.
+Cada slot tem 4 bytes: o offset e o tamanho do registro dentro da página. Os
+slots crescem do começo e os registros do fim, e a página está cheia quando
+os dois se encontram. Todos os inteiros são little endian; os campos de 2
+bytes limitam a página a 32 KB.
+
+O `page_size` vem do `my_dbms.conf` e é gravado na página 0 de cada arquivo
+quando o banco é criado. Abrir um banco existente com outro valor é erro,
+porque um arquivo de páginas de 4 KB lido como se fossem de 8 KB vira lixo. O
+cabeçalho também faz um arquivo de outro formato (como o CSV das versões
+antigas) ser recusado com erro, em vez de lido errado.
+
+Um registro precisa caber numa página vazia: o máximo é `page_size − 8`
+bytes (o cabeçalho da página e um slot). Um registro maior é recusado com
+erro, e nada é gravado.
+
+### Registros
+
+Cada linha vira bytes guiada pelos tipos das colunas:
 
 ```
-table,pessoas,pessoas,"id INT NOT NULL,email TEXT,nome TEXT"
-primary_key,pessoas_pkey,pessoas,id
-unique,pessoas_email_key,pessoas,email
+bitmap de NULL | valor 0 | valor 1 | …
+```
+
+- **Bitmap de NULL**: um bit por coluna (o bit `i % 8` do byte `i / 8`),
+  ligado quando o valor é `NULL`. Um `NULL` não ocupa mais nada.
+- **INT**: 8 bytes (int64).
+- **TEXT**: o tamanho em uvarint (1 byte até 127, 2 bytes até 16383…) e
+  depois os bytes do texto.
+
+Como o tamanho vem antes do dado, não existe escape: o texto pode ter
+vírgula, aspas ou `\N`. O tamanho do registro inteiro fica no slot. Exemplo,
+`(1, 'Ana', NULL)` em `pessoas (id INT, nome TEXT, email TEXT)`:
+
+```
+04                          bitmap 0000_0100: email é NULL
+01 00 00 00 00 00 00 00     id = 1
+03 41 6E 61                 nome = "Ana"
+```
+
+Na memória, cada célula continua sendo um `storage.Value`: um texto ou
+`NULL`, com os números já normalizados como texto. A conversão para int64
+acontece só na hora de gravar.
+
+### Catálogo
+
+O catálogo tem uma linha por objeto do banco, com as colunas `type`, `name`,
+`table_name` e `definition`:
+
+```
+type        | name              | table_name | definition
+table       | pessoas           | pessoas    | id INT NOT NULL,email TEXT,nome TEXT
+primary_key | pessoas_pkey      | pessoas    | id
+unique      | pessoas_email_key | pessoas    | email
 ```
 
 | `type` | `definition` |
@@ -152,40 +216,30 @@ chave. Como no SQL padrão, colunas da chave primária viram `NOT NULL`, e
 `NULL` não é igual a nada, então uma chave `UNIQUE` aceita várias linhas com
 `NULL`.
 
-### NULL
-
-Na memória, cada célula é um `storage.Value`: um texto ou `NULL`. No disco,
-`NULL` é gravado como `\N` (a mesma convenção do `COPY` do PostgreSQL), e um
-texto que começa com `\` ganha mais uma `\` na frente, para o texto `\N`
-digitado pelo usuário não virar `NULL`:
-
-```
-1,\N
-2,\\N
-```
-
-A linha 1 tem `NULL`, a linha 2 tem o texto `\N`.
-
 O `Open` carrega o catálogo inteiro para a memória, e as operações consultam
 essa cópia. O schema do próprio catálogo fica fixo no código
 (`catalogSchema`), por isso ele pode ser lido como uma tabela qualquer:
 `SELECT * FROM _catalog;`. Nomes começando com `_` são reservados para o
 sistema: não dá para criar tabela com eles nem fazer `INSERT` neles.
 
-O `CREATE TABLE` cria primeiro o arquivo de dados e depois grava no catálogo.
-Se o programa cair no meio, sobra no máximo um arquivo que o catálogo não
-enxerga. Ele não é apagado nem sobrescrito: criar uma tabela com esse nome dá
-erro até alguém remover o arquivo.
+### Escrita
 
-`INSERT` acrescenta no fim do arquivo. `UPDATE` e `DELETE` leem a tabela,
-mudam na memória e chamam `ReplaceRows`, que grava tudo em `<nome>.marina.tmp`
-e renomeia por cima do original: se o programa cair no meio, o original
-continua inteiro. O `DROP TABLE` regrava o catálogo do mesmo jeito, sem as
+O `CREATE TABLE` cria primeiro o arquivo de dados (só com a página 0) e
+depois grava no catálogo. Se o programa cair no meio, sobra no máximo um
+arquivo que o catálogo não enxerga. Ele não é apagado nem sobrescrito: criar
+uma tabela com esse nome dá erro até alguém remover o arquivo.
+
+Toda escrita monta as páginas na memória e grava o arquivo inteiro em
+`<nome>.marina.tmp`, que depois é renomeado por cima do original: se o
+programa cair no meio, o original continua inteiro. O `INSERT` lê as
+páginas, enche a última e abre páginas novas quando ela acaba. `UPDATE` e
+`DELETE` leem a tabela, mudam na memória e chamam `ReplaceRows`, que monta as
+páginas do zero. O `DROP TABLE` regrava o catálogo do mesmo jeito, sem as
 linhas da tabela e das chaves dela, e depois apaga o arquivo de dados.
 
-Os tipos aceitos são `INT` e `TEXT`. O CSV cuida de vírgulas e aspas dentro
-dos valores. O único caso especial é um registro com um só campo vazio, que é
-gravado como `""` para o leitor não pular a linha.
+Regravar o arquivo inteiro é simples e seguro, mas fica caro em tabelas
+grandes. O próximo passo é gravar só a página que mudou, junto com um journal
+que proteja contra quedas no meio da escrita.
 
 ## Como adicionar um comando
 

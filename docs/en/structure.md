@@ -30,7 +30,9 @@ my_dbms/
 │   └── storage/          → on-disk persistence
 │       ├── storage.go    → DB: catalog, CreateTable, InsertRows, ReadTable,
 │       │                   ReplaceRows, DropTable
-│       └── storage_test.go
+│       ├── storage_test.go
+│       ├── page.go       → on-disk format: header, slotted pages, records
+│       └── page_test.go
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
 ├── my_dbms.conf          → parameters (data_dir etc.)
@@ -46,6 +48,7 @@ file doesn't exist, the defaults from `config.Default()` apply.
 | Parameter | Default | What it is |
 |---|---|---|
 | `data_dir` | `data` | Folder for the table files. A relative path starts from the folder the program runs in. |
+| `page_size` | `4096` | Size of the file pages, in bytes: a power of 2 between 1024 and 32768. It is stored in the database when the database is created; opening an existing database with a different value is an error. |
 
 To add a parameter: a field in `Config`, the default value in `Default()`, a
 `case` in `Load()` and a commented line in `my_dbms.conf`. An unknown key is
@@ -103,7 +106,7 @@ DROP TABLE p;
 | `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase and strips quotes from strings. | Know that disks or tables exist. |
 | `internal/parser` | Checks the grammar and turns tokens into an AST (`Statement`). Syntax errors come from here, with the position. | Know whether the table or column exists. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
-| `internal/storage` | Maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
+| `internal/storage` | Defines the on-disk format, maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
 | `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, calls storage and formats the output. | Implement file-format or grammar rules. |
 
 `internal/` prevents code outside the module from importing these packages,
@@ -111,22 +114,83 @@ which leaves us free to change the internal API.
 
 ## On-disk format
 
-Everything is CSV, read and written with `encoding/csv`. Each table is a file
-at `<data_dir>/<name>.marina` holding only its records:
-
-```
-1,Ana
-2,"Silva, Bruno"
-```
-
+Each table is a file at `<data_dir>/<name>.marina` holding only its records.
 What describes the tables lives in the **catalog**,
-`<data_dir>/_catalog.marina`: one line per database object, in the format
-`type,name,table_name,definition`.
+`<data_dir>/_catalog.marina`, stored in the same format. The format code is
+in `internal/storage/page.go`.
+
+### Pages
+
+The file is split into **pages** of `page_size` bytes (4096 by default), as
+in SQLite and PostgreSQL: page N starts at byte `N × page_size`. Page 0 is
+the file header, and the others hold the records:
 
 ```
-table,pessoas,pessoas,"id INT NOT NULL,email TEXT,nome TEXT"
-primary_key,pessoas_pkey,pessoas,id
-unique,pessoas_email_key,pessoas,email
+page 0   "MRNA" | version (2 bytes) | page_size (2 bytes) | zeros to the end
+
+page N   ┌───────────────────────────────────────────────────────┐
+         │ slot count | start of records | slot 0 | slot 1 …     │  slots grow →
+         │                                                       │
+         │                     free space                        │
+         │                                                       │
+         │                  … | record 1 | record 0              │  ← records grow from the end
+         └───────────────────────────────────────────────────────┘
+```
+
+Each slot is 4 bytes: the offset and size of the record inside the page.
+Slots grow from the start and records from the end, and the page is full
+when the two meet. All integers are little endian; the 2-byte fields limit a
+page to 32 KB.
+
+`page_size` comes from `my_dbms.conf` and is written to page 0 of every file
+when the database is created. Opening an existing database with a different
+value is an error, because a file of 4 KB pages read as 8 KB pages turns into
+garbage. The header also makes a file in another format (like the CSV of
+older versions) get rejected with an error instead of read wrong.
+
+A record must fit in an empty page: the maximum is `page_size − 8` bytes (the
+page header and one slot). A bigger record is rejected with an error, and
+nothing is written.
+
+### Records
+
+Each row becomes bytes guided by the column types:
+
+```
+NULL bitmap | value 0 | value 1 | …
+```
+
+- **NULL bitmap**: one bit per column (bit `i % 8` of byte `i / 8`), set when
+  the value is `NULL`. A `NULL` takes no other space.
+- **INT**: 8 bytes (int64).
+- **TEXT**: the length as a uvarint (1 byte up to 127, 2 bytes up to
+  16383…) followed by the text bytes.
+
+Since the length comes before the data, there is no escaping: the text may
+contain commas, quotes or `\N`. The size of the whole record lives in the
+slot. Example, `(1, 'Ana', NULL)` in `pessoas (id INT, nome TEXT, email
+TEXT)`:
+
+```
+04                          bitmap 0000_0100: email is NULL
+01 00 00 00 00 00 00 00     id = 1
+03 41 6E 61                 nome = "Ana"
+```
+
+In memory, each cell is still a `storage.Value`: a text or `NULL`, with
+numbers already normalized as text. The conversion to int64 only happens when
+writing.
+
+### Catalog
+
+The catalog has one row per database object, with the columns `type`,
+`name`, `table_name` and `definition`:
+
+```
+type        | name              | table_name | definition
+table       | pessoas           | pessoas    | id INT NOT NULL,email TEXT,nome TEXT
+primary_key | pessoas_pkey      | pessoas    | id
+unique      | pessoas_email_key | pessoas    | email
 ```
 
 | `type` | `definition` |
@@ -153,41 +217,30 @@ and rejects the record if another one already has the same values in the
 key's columns. As in standard SQL, primary key columns become `NOT NULL`, and
 `NULL` equals nothing, so a `UNIQUE` key accepts several rows with `NULL`.
 
-### NULL
-
-In memory, each cell is a `storage.Value`: a text or `NULL`. On disk, `NULL`
-is written as `\N` (the same convention as PostgreSQL's `COPY`), and a text
-starting with `\` gets one more `\` in front, so the text `\N` typed by the
-user doesn't become `NULL`:
-
-```
-1,\N
-2,\\N
-```
-
-Row 1 holds `NULL`, row 2 holds the text `\N`.
-
 `Open` loads the whole catalog into memory, and operations read that copy.
 The catalog's own schema is fixed in code (`catalogSchema`), so it can be
 read like any other table: `SELECT * FROM _catalog;`. Names starting with `_`
 are reserved for the system: you can't create a table with one or `INSERT`
 into it.
 
-`CREATE TABLE` creates the data file first and then writes to the catalog.
-If the program dies in between, at worst a file is left that the catalog
-doesn't see. It is never deleted or overwritten: creating a table with that
-name fails until someone removes the file.
+### Writing
 
-`INSERT` appends to the end of the file. `UPDATE` and `DELETE` read the
-table, change it in memory and call `ReplaceRows`, which writes everything to
-`<name>.marina.tmp` and renames it over the original: if the program dies
-midway, the original stays whole. `DROP TABLE` rewrites the catalog the same
-way, without the lines for the table and its keys, then deletes the data
-file.
+`CREATE TABLE` creates the data file first (with only page 0) and then
+writes to the catalog. If the program dies in between, at worst a file is
+left that the catalog doesn't see. It is never deleted or overwritten:
+creating a table with that name fails until someone removes the file.
 
-The accepted types are `INT` and `TEXT`. CSV takes care of commas and quotes
-inside values. The only special case is a record with a single empty field,
-which is written as `""` so the reader doesn't skip the line.
+Every write builds the pages in memory and writes the whole file to
+`<name>.marina.tmp`, which is then renamed over the original: if the program
+dies midway, the original stays whole. `INSERT` reads the pages, fills the
+last one and opens new pages when it runs out. `UPDATE` and `DELETE` read the
+table, change it in memory and call `ReplaceRows`, which builds the pages
+from scratch. `DROP TABLE` rewrites the catalog the same way, without the
+rows for the table and its keys, then deletes the data file.
+
+Rewriting the whole file is simple and safe, but gets expensive for large
+tables. The next step is writing only the page that changed, together with a
+journal that protects against crashes in the middle of a write.
 
 ## Adding a command
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -13,10 +14,14 @@ type Config struct {
 	// DataDir é a pasta onde ficam os arquivos das tabelas. Caminho
 	// relativo é resolvido a partir da pasta onde o programa roda.
 	DataDir string
+	// PageSize é o tamanho das páginas dos arquivos, em bytes. Fica gravado
+	// no banco quando ele é criado; o storage confere se é válido e se bate
+	// com o banco existente.
+	PageSize int
 }
 
 func Default() Config {
-	return Config{DataDir: "data"}
+	return Config{DataDir: "data", PageSize: 4096}
 }
 
 // Load lê um arquivo no formato "chave = valor", uma por linha. Linhas
@@ -54,6 +59,12 @@ func Load(path string) (Config, error) {
 				return cfg, fmt.Errorf("%s linha %d: data_dir não pode ser vazio", path, i+1)
 			}
 			cfg.DataDir = value
+		case "page_size":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return cfg, fmt.Errorf("%s linha %d: page_size precisa ser um número, veio %q", path, i+1, value)
+			}
+			cfg.PageSize = n
 		default:
 			return cfg, fmt.Errorf("%s linha %d: parâmetro desconhecido %q", path, i+1, key)
 		}
