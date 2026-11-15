@@ -33,10 +33,12 @@ type Insert struct {
 	Rows    [][]Literal
 }
 
-// Select é SELECT colunas FROM tabela. Columns nil quer dizer *.
+// Select é SELECT colunas FROM tabela [WHERE condição]. Columns nil quer
+// dizer *, e Where nil quer dizer todas as linhas.
 type Select struct {
 	Table   string
 	Columns []string
+	Where   Expr
 }
 
 func (*CreateTable) statement() {}
@@ -57,3 +59,38 @@ type Literal struct {
 	Kind LiteralKind
 	Text string
 }
+
+// Expr é uma condição do WHERE ou um operando dela. O tipo concreto diz qual:
+// *Logical, *Comparison, *IsNull, ColumnRef ou Literal.
+type Expr interface {
+	expr()
+}
+
+// Logical é a AND b ou a OR b.
+type Logical struct {
+	Op          string
+	Left, Right Expr
+}
+
+// Comparison é a op b, com op sendo =, <>, <, >, <= ou >=.
+type Comparison struct {
+	Op          string
+	Left, Right Expr
+}
+
+// IsNull é a IS NULL ou, com Not, a IS NOT NULL.
+type IsNull struct {
+	Expr Expr
+	Not  bool
+}
+
+// ColumnRef é o nome de uma coluna usado numa condição.
+type ColumnRef struct {
+	Name string
+}
+
+func (*Logical) expr()    {}
+func (*Comparison) expr() {}
+func (*IsNull) expr()     {}
+func (ColumnRef) expr()   {}
+func (Literal) expr()     {}

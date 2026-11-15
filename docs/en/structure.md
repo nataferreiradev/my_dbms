@@ -12,6 +12,7 @@ my_dbms/
 │   ├── main.go           → reads lines from stdin and prints the result
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
+│   ├── where.go          → compileWhere(): WHERE condition → function that tests a row
 │   ├── format.go         → renders the SELECT result as a table
 │   └── format_test.go
 ├── internal/

@@ -154,7 +154,8 @@ func (p *parser) insert() (*Insert, error) {
 	}
 }
 
-// selectStmt lê SELECT * FROM tabela ou SELECT a, b FROM tabela.
+// selectStmt lê SELECT * FROM tabela ou SELECT a, b FROM tabela, com WHERE
+// opcional.
 func (p *parser) selectStmt() (*Select, error) {
 	if err := p.expect("SELECT"); err != nil {
 		return nil, err
@@ -176,8 +177,91 @@ func (p *parser) selectStmt() (*Select, error) {
 		return nil, err
 	}
 	table, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
 	stmt.Table = table
+	stmt.Where, err = p.where()
 	return stmt, err
+}
+
+// where lê "WHERE condição", se vier. A precedência é a do SQL: OR liga mais
+// fraco que AND, que liga mais fraco que as comparações, então
+// "a = 1 OR b = 2 AND c = 3" é "a = 1 OR (b = 2 AND c = 3)".
+func (p *parser) where() (Expr, error) {
+	if !p.accept("WHERE") {
+		return nil, nil
+	}
+	return p.or()
+}
+
+func (p *parser) or() (Expr, error) {
+	return p.logical("OR", p.and)
+}
+
+func (p *parser) and() (Expr, error) {
+	return p.logical("AND", p.comparison)
+}
+
+// logical lê "x op x op x ...", em que cada x é lido por operand, e junta
+// tudo da esquerda para a direita.
+func (p *parser) logical(op string, operand func() (Expr, error)) (Expr, error) {
+	left, err := operand()
+	if err != nil {
+		return nil, err
+	}
+	for p.accept(op) {
+		right, err := operand()
+		if err != nil {
+			return nil, err
+		}
+		left = &Logical{Op: op, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+// comparison lê "a op b", "a IS [NOT] NULL" ou uma condição entre parênteses.
+func (p *parser) comparison() (Expr, error) {
+	if p.accept("(") {
+		e, err := p.or()
+		if err != nil {
+			return nil, err
+		}
+		return e, p.expect(")")
+	}
+
+	left, err := p.operand()
+	if err != nil {
+		return nil, err
+	}
+	if p.accept("IS") {
+		not := p.accept("NOT")
+		return &IsNull{Expr: left, Not: not}, p.expect("NULL")
+	}
+
+	op := p.peek()
+	if op.Type != sql.Operator || op.Value == "*" {
+		return nil, p.unexpected("um operador de comparação (=, <>, <, >, <=, >=)")
+	}
+	p.pos++
+	right, err := p.operand()
+	if err != nil {
+		return nil, err
+	}
+	return &Comparison{Op: op.Value, Left: left, Right: right}, nil
+}
+
+// operand lê um nome de coluna ou um valor.
+func (p *parser) operand() (Expr, error) {
+	if p.peek().Type == sql.Identifier {
+		name, err := p.ident()
+		return ColumnRef{Name: name}, err
+	}
+	lit, err := p.literal()
+	if err != nil {
+		return nil, p.unexpected("uma coluna ou um valor")
+	}
+	return lit, nil
 }
 
 // literal lê um número, uma string ou NULL.

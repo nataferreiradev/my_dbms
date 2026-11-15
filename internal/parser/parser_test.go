@@ -77,6 +77,43 @@ func TestParse(t *testing.T) {
 			input: "select nome, id from t",
 			want:  &Select{Table: "t", Columns: []string{"nome", "id"}},
 		},
+		{
+			// AND liga mais forte que OR.
+			input: "SELECT * FROM t WHERE a = 1 OR b > 'x' AND c IS NOT NULL",
+			want: &Select{Table: "t", Where: &Logical{
+				Op:   "OR",
+				Left: &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
+				Right: &Logical{
+					Op:    "AND",
+					Left:  &Comparison{Op: ">", Left: ColumnRef{"b"}, Right: Literal{String, "x"}},
+					Right: &IsNull{Expr: ColumnRef{"c"}, Not: true},
+				},
+			}},
+		},
+		{
+			input: "SELECT * FROM t WHERE (a<>1 OR b IS NULL) AND 2<=a",
+			want: &Select{Table: "t", Where: &Logical{
+				Op: "AND",
+				Left: &Logical{
+					Op:    "OR",
+					Left:  &Comparison{Op: "<>", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
+					Right: &IsNull{Expr: ColumnRef{"b"}},
+				},
+				Right: &Comparison{Op: "<=", Left: Literal{Number, "2"}, Right: ColumnRef{"a"}},
+			}},
+		},
+		{
+			input: "SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3",
+			want: &Select{Table: "t", Where: &Logical{
+				Op: "AND",
+				Left: &Logical{
+					Op:    "AND",
+					Left:  &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
+					Right: &Comparison{Op: "=", Left: ColumnRef{"b"}, Right: Literal{Number, "2"}},
+				},
+				Right: &Comparison{Op: "=", Left: ColumnRef{"c"}, Right: Literal{Number, "3"}},
+			}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -114,6 +151,14 @@ func TestParseErrors(t *testing.T) {
 		{input: "INSERT INTO t () VALUES (1)", wantErr: "esperava um nome"},
 		{input: "SELECT FROM t", wantErr: "esperava um nome"},
 		{input: "SELECT * FROM t t", wantErr: "esperava o fim do comando"},
+		{input: "SELECT * FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
+		{input: "SELECT * FROM t WHERE a", wantErr: "esperava um operador de comparação"},
+		{input: "SELECT * FROM t WHERE a * 1", wantErr: "esperava um operador de comparação"},
+		{input: "SELECT * FROM t WHERE a = ", wantErr: "esperava uma coluna ou um valor"},
+		{input: "SELECT * FROM t WHERE a = 1 AND", wantErr: "esperava uma coluna ou um valor"},
+		{input: "SELECT * FROM t WHERE (a = 1", wantErr: `esperava ")"`},
+		{input: "SELECT * FROM t WHERE a IS 1", wantErr: `esperava "NULL"`},
+		{input: "SELECT * FROM t WHERE a = 1 b = 2", wantErr: "esperava o fim do comando"},
 	}
 
 	for _, tt := range tests {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"my_DBMS/internal/storage"
@@ -161,6 +162,80 @@ func TestInsertColumnsAndRows(t *testing.T) {
 		if got != s.want {
 			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
 		}
+	}
+}
+
+func TestWhere(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := []string{
+		"CREATE TABLE p (id INT, nome TEXT, idade INT, chefe INT);",
+		"INSERT INTO p VALUES (1, 'Ana', 30, NULL), (2, 'Bia', 9, 1), (3, 'Caio', 10, 1), (4, 'Dani', NULL, 2);",
+	}
+	for _, input := range setup {
+		if _, err := execute(db, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		where   string
+		want    string // ids que passam, separados por vírgula
+		wantErr bool
+	}{
+		{where: "id = 2", want: "2"},
+		{where: "id<>2", want: "1,3,4"},
+		{where: "idade > 9", want: "1,3"}, // numérico: 10 > 9
+		{where: "idade >= 10 AND idade <= 30", want: "1,3"},
+		{where: "nome < 'C'", want: "1,2"},
+		{where: "nome = 'Ana' OR id = 4", want: "1,4"},
+		{where: "id = 1 OR id = 2 AND idade = 30", want: "1"},
+		{where: "(id = 1 OR id = 2) AND idade = 9", want: "2"},
+		{where: "chefe = id - 0", wantErr: true},
+		{where: "chefe = 1", want: "2,3"},
+		{where: "chefe <> 1", want: "4"}, // NULL <> 1 é desconhecido
+		{where: "chefe = NULL", want: ""},
+		{where: "chefe IS NULL", want: "1"},
+		{where: "idade IS NOT NULL AND chefe IS NOT NULL", want: "2,3"},
+		{where: "idade > 5 OR chefe = 2", want: "1,2,3,4"},
+		{where: "chefe < id", want: "2,3,4"},
+		{where: "1 = 1", want: "1,2,3,4"},
+		{where: "'a' = 'b'", want: ""},
+		{where: "idade = 'trinta'", wantErr: true},
+		{where: "nome = 1", wantErr: true},
+		{where: "nome = id", wantErr: true},
+		{where: "1 = 'a'", wantErr: true},
+		{where: "idade = 1.5", wantErr: true},
+		{where: "altura = 1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.where, func(t *testing.T) {
+			got, err := execute(db, "SELECT id FROM p WHERE "+tt.where)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("erro = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			// Tira cabeçalho, separador e contagem e fica só com os ids.
+			lines := strings.Split(got, "\n")
+			ids := strings.Join(lines[2:len(lines)-1], ",")
+			if ids != tt.want {
+				t.Errorf("ids = %q, want %q\n%s", ids, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestWhereEmptyTableStillValidates(t *testing.T) {
+	db, _ := storage.Open(t.TempDir())
+	execute(db, "CREATE TABLE p (id INT);")
+
+	if _, err := execute(db, "SELECT * FROM p WHERE nada = 1"); err == nil {
+		t.Error("coluna inexistente no WHERE deveria dar erro mesmo com a tabela vazia")
 	}
 }
 

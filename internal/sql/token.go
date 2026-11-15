@@ -38,6 +38,7 @@ var keywords = map[string]bool{
 	"UNIQUE":  true,
 	"NOT":     true,
 	"NULL":    true,
+	"IS":      true,
 }
 
 var operators = map[string]bool{

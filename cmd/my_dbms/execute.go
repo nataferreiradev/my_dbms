@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"my_DBMS/internal/parser"
 	"my_DBMS/internal/sql"
@@ -87,8 +88,9 @@ func insert(db *storage.DB, s *parser.Insert) (string, error) {
 			row[i] = storage.Null
 		}
 		for j, p := range positions {
-			if row[p], err = literalValue(lits[j], schema.Columns[p]); err != nil {
-				return "", err
+			col := schema.Columns[p]
+			if row[p], err = literalValue(lits[j], col.Type); err != nil {
+				return "", fmt.Errorf("coluna %s: %w", col.Name, err)
 			}
 		}
 		rows[r] = row
@@ -108,21 +110,31 @@ func count(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, plural)
 }
 
-// literalValue confere se o literal serve para a coluna e devolve o valor
-// como ele vai para o disco: NULL, número inteiro normalizado ou o texto.
-// NOT NULL é conferido pelo storage.
-func literalValue(lit parser.Literal, col storage.Column) (storage.Value, error) {
+// literalValue confere se o literal serve para o tipo (INT ou TEXT) e devolve
+// o valor como ele vai para o disco: NULL, número inteiro normalizado ou o
+// texto. NOT NULL é conferido pelo storage.
+func literalValue(lit parser.Literal, typ string) (storage.Value, error) {
 	switch {
 	case lit.Kind == parser.Null:
 		return storage.Null, nil
-	case col.Type == "INT" && lit.Kind == parser.Number:
-		if n, err := strconv.Atoi(lit.Text); err == nil {
-			return storage.Text(strconv.Itoa(n)), nil
+	case typ == "INT" && lit.Kind == parser.Number:
+		n, err := strconv.Atoi(lit.Text)
+		if err != nil {
+			return storage.Value{}, fmt.Errorf("%s não é um número inteiro", lit.Text)
 		}
-	case col.Type == "TEXT" && lit.Kind == parser.String:
+		return storage.Text(strconv.Itoa(n)), nil
+	case typ == "TEXT" && lit.Kind == parser.String:
 		return storage.Text(lit.Text), nil
 	}
-	return storage.Value{}, fmt.Errorf("a coluna %s é %s, o valor %s não serve", col.Name, col.Type, lit.Text)
+	return storage.Value{}, fmt.Errorf("esperava um valor %s, veio %s", typ, showLiteral(lit))
+}
+
+// showLiteral escreve o literal como no SQL, com aspas se for texto.
+func showLiteral(lit parser.Literal) string {
+	if lit.Kind == parser.String {
+		return "'" + strings.ReplaceAll(lit.Text, "'", "''") + "'"
+	}
+	return lit.Text
 }
 
 // display é como um valor aparece na saída do SELECT.
@@ -135,6 +147,10 @@ func display(v storage.Value) string {
 
 func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	table, err := db.ReadTable(s.Table)
+	if err != nil {
+		return "", err
+	}
+	where, err := compileWhere(s.Where, table.Schema)
 	if err != nil {
 		return "", err
 	}
@@ -158,12 +174,16 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	for j, i := range indexes {
 		headers[j] = table.Columns[i].Name
 	}
-	rows := make([][]string, len(table.Rows))
-	for r, row := range table.Rows {
-		rows[r] = make([]string, len(indexes))
-		for j, i := range indexes {
-			rows[r][j] = display(row[i])
+	var rows [][]string
+	for _, row := range table.Rows {
+		if where(row) != triTrue {
+			continue
 		}
+		cells := make([]string, len(indexes))
+		for j, i := range indexes {
+			cells[j] = display(row[i])
+		}
+		rows = append(rows, cells)
 	}
 	return formatTable(headers, rows), nil
 }

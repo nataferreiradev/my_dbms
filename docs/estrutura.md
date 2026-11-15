@@ -11,6 +11,7 @@ my_dbms/
 │   ├── main.go           → lê linhas do stdin e imprime o resultado
 │   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
+│   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha
 │   ├── format.go         → desenha o resultado do SELECT como tabela
 │   └── format_test.go
 ├── internal/
