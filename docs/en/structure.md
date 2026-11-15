@@ -28,7 +28,8 @@ my_dbms/
 │   │   ├── parser.go     → Parse(): []Token → Statement
 │   │   └── parser_test.go
 │   └── storage/          → on-disk persistence
-│       ├── storage.go    → DB: catalog, CreateTable, InsertRows, ReadTable
+│       ├── storage.go    → DB: catalog, CreateTable, InsertRows, ReadTable,
+│       │                   ReplaceRows, DropTable
 │       └── storage_test.go
 ├── docs/                 → project documentation (Portuguese)
 │   └── en/               → English version
@@ -49,6 +50,27 @@ file doesn't exist, the defaults from `config.Default()` apply.
 To add a parameter: a field in `Config`, the default value in `Default()`, a
 `case` in `Load()` and a commented line in `my_dbms.conf`. An unknown key is
 an error, so a typo doesn't slip by silently.
+
+## Accepted SQL
+
+```sql
+CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, email TEXT UNIQUE);
+INSERT INTO p VALUES (1, 'Ana', NULL), (2, 'Bia', 'bia@x');
+INSERT INTO p (nome, id) VALUES ('Caio', 3);
+SELECT * FROM p WHERE (id > 1 OR email IS NULL) AND nome <> 'Bia';
+UPDATE p SET email = 'ana@x' WHERE id = 1;
+DELETE FROM p WHERE email IS NULL;
+DROP TABLE p;
+```
+
+- Types: `INT` and `TEXT`. Strings use single or double quotes; a doubled
+  quote inside one is a quote (`'it''s'`).
+- Column constraints: `NOT NULL`, `PRIMARY KEY`, `UNIQUE`. Multi-column keys:
+  `PRIMARY KEY (a, b)`, `UNIQUE (a, b)`.
+- `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` and
+  parentheses. Comparing with `NULL` is "unknown" and the row doesn't pass,
+  as in standard SQL; use `IS NULL`.
+- A multi-row `INSERT` writes all rows or none.
 
 ## How a command flows
 
@@ -155,6 +177,13 @@ into it.
 If the program dies in between, at worst a file is left that the catalog
 doesn't see. It is never deleted or overwritten: creating a table with that
 name fails until someone removes the file.
+
+`INSERT` appends to the end of the file. `UPDATE` and `DELETE` read the
+table, change it in memory and call `ReplaceRows`, which writes everything to
+`<name>.marina.tmp` and renames it over the original: if the program dies
+midway, the original stays whole. `DROP TABLE` rewrites the catalog the same
+way, without the lines for the table and its keys, then deletes the data
+file.
 
 The accepted types are `INT` and `TEXT`. CSV takes care of commas and quotes
 inside values. The only special case is a record with a single empty field,

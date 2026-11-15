@@ -289,6 +289,57 @@ func (db *DB) InsertRows(name string, rows [][]Value) error {
 	return db.appendRows(name, encoded)
 }
 
+// ReplaceRows troca todos os registros da tabela por rows. É o que DELETE e
+// UPDATE usam: leem a tabela, mudam na memória e gravam de volta. NOT NULL e
+// chaves são conferidos antes de gravar.
+func (db *DB) ReplaceRows(name string, rows [][]Value) error {
+	if isSystem(name) {
+		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
+	}
+	schema, err := db.TableSchema(name)
+	if err != nil {
+		return err
+	}
+	if err := checkRows(schema, rows); err != nil {
+		return err
+	}
+	if err := checkKeys(schema, rows); err != nil {
+		return err
+	}
+
+	encoded := make([][]string, len(rows))
+	for i, row := range rows {
+		encoded[i] = encodeRow(row)
+	}
+	return db.writeRows(name, encoded)
+}
+
+// DropTable apaga a tabela: as linhas dela e das chaves dela no catálogo, e
+// depois o arquivo de dados.
+func (db *DB) DropTable(name string) error {
+	if isSystem(name) {
+		return fmt.Errorf("tabela %q é do sistema e não pode ser apagada", name)
+	}
+	if _, err := db.TableSchema(name); err != nil {
+		return err
+	}
+
+	catalog, err := db.readRows(catalogName, len(catalogSchema.Columns))
+	if err != nil {
+		return err
+	}
+	kept := slices.DeleteFunc(catalog, func(row []string) bool { return row[2] == name })
+	if err := db.writeRows(catalogName, kept); err != nil {
+		return err
+	}
+	delete(db.tables, name)
+
+	if err := os.Remove(db.tablePath(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("tabela removida do catálogo, mas o arquivo ficou: %w", err)
+	}
+	return nil
+}
+
 // checkRows confere o número de valores e o NOT NULL de cada linha.
 func checkRows(schema Schema, rows [][]Value) error {
 	for _, row := range rows {
@@ -425,6 +476,39 @@ func (db *DB) readRows(name string, fields int) ([][]string, error) {
 // appendRows acrescenta registros no fim de um arquivo de tabela, com uma
 // única escrita.
 func (db *DB) appendRows(name string, rows [][]string) error {
+	data, err := encodeCSV(rows)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(db.tablePath(name), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// writeRows troca o conteúdo de um arquivo de tabela. Grava num arquivo
+// temporário e renomeia por cima do original: se o programa cair no meio,
+// o original continua inteiro.
+func (db *DB) writeRows(name string, rows [][]string) error {
+	data, err := encodeCSV(rows)
+	if err != nil {
+		return err
+	}
+	path := db.tablePath(name)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// encodeCSV escreve os registros em CSV.
+func encodeCSV(rows [][]string) ([]byte, error) {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	for _, row := range rows {
@@ -438,19 +522,7 @@ func (db *DB) appendRows(name string, rows [][]string) error {
 		w.Write(row)
 	}
 	w.Flush()
-	if err := w.Error(); err != nil {
-		return err
-	}
-
-	file, err := os.OpenFile(db.tablePath(name), os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(buf.Bytes()); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
+	return buf.Bytes(), w.Error()
 }
 
 // formatColumns escreve as colunas como vão para o catálogo:

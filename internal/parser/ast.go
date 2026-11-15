@@ -1,7 +1,7 @@
 package parser
 
 // Statement é um comando já analisado. O tipo concreto diz qual:
-// *CreateTable, *Insert ou *Select.
+// *CreateTable, *Insert, *Select, *Update, *Delete ou *DropTable.
 type Statement interface {
 	statement()
 }
@@ -41,9 +41,36 @@ type Select struct {
 	Where   Expr
 }
 
+// Update é UPDATE tabela SET a = valor, ... [WHERE condição].
+type Update struct {
+	Table string
+	Set   []Assignment
+	Where Expr
+}
+
+// Assignment é um "coluna = valor" do SET.
+type Assignment struct {
+	Column string
+	Value  Literal
+}
+
+// Delete é DELETE FROM tabela [WHERE condição].
+type Delete struct {
+	Table string
+	Where Expr
+}
+
+// DropTable é DROP TABLE nome.
+type DropTable struct {
+	Name string
+}
+
 func (*CreateTable) statement() {}
 func (*Insert) statement()      {}
 func (*Select) statement()      {}
+func (*Update) statement()      {}
+func (*Delete) statement()      {}
+func (*DropTable) statement()   {}
 
 type LiteralKind int
 

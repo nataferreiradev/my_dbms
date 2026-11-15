@@ -27,6 +27,12 @@ func Parse(tokens []sql.Token) (Statement, error) {
 		stmt, err = p.insert()
 	case "SELECT":
 		stmt, err = p.selectStmt()
+	case "UPDATE":
+		stmt, err = p.update()
+	case "DELETE":
+		stmt, err = p.delete()
+	case "DROP":
+		stmt, err = p.dropTable()
 	default:
 		return nil, fmt.Errorf("comando não suportado: %s", tokens[0].Value)
 	}
@@ -183,6 +189,64 @@ func (p *parser) selectStmt() (*Select, error) {
 	stmt.Table = table
 	stmt.Where, err = p.where()
 	return stmt, err
+}
+
+// update lê UPDATE tabela SET a = valor, b = valor [WHERE condição].
+func (p *parser) update() (*Update, error) {
+	if err := p.expect("UPDATE"); err != nil {
+		return nil, err
+	}
+	table, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect("SET"); err != nil {
+		return nil, err
+	}
+
+	stmt := &Update{Table: table}
+	for {
+		col, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect("="); err != nil {
+			return nil, err
+		}
+		value, err := p.literal()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Set = append(stmt.Set, Assignment{Column: col, Value: value})
+		if !p.accept(",") {
+			break
+		}
+	}
+	stmt.Where, err = p.where()
+	return stmt, err
+}
+
+// delete lê DELETE FROM tabela [WHERE condição].
+func (p *parser) delete() (*Delete, error) {
+	if err := p.expect("DELETE", "FROM"); err != nil {
+		return nil, err
+	}
+	table, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	stmt := &Delete{Table: table}
+	stmt.Where, err = p.where()
+	return stmt, err
+}
+
+// dropTable lê DROP TABLE nome.
+func (p *parser) dropTable() (*DropTable, error) {
+	if err := p.expect("DROP", "TABLE"); err != nil {
+		return nil, err
+	}
+	name, err := p.ident()
+	return &DropTable{Name: name}, err
 }
 
 // where lê "WHERE condição", se vier. A precedência é a do SQL: OR liga mais

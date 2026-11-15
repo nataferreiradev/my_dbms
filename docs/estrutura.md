@@ -27,7 +27,8 @@ my_dbms/
 │   │   ├── parser.go     → Parse(): []Token → Statement
 │   │   └── parser_test.go
 │   └── storage/          → persistência em disco
-│       ├── storage.go    → DB: catálogo, CreateTable, InsertRows, ReadTable
+│       ├── storage.go    → DB: catálogo, CreateTable, InsertRows, ReadTable,
+│       │                   ReplaceRows, DropTable
 │       └── storage_test.go
 ├── docs/                 → documentação do projeto (português)
 │   └── en/               → versão em inglês
@@ -48,6 +49,27 @@ Se o arquivo não existir, valem os padrões de `config.Default()`.
 Para adicionar um parâmetro: um campo em `Config`, o valor padrão em
 `Default()`, um `case` em `Load()` e uma linha comentada no `my_dbms.conf`.
 Chave desconhecida é erro, para um erro de digitação não passar em silêncio.
+
+## SQL aceito
+
+```sql
+CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, email TEXT UNIQUE);
+INSERT INTO p VALUES (1, 'Ana', NULL), (2, 'Bia', 'bia@x');
+INSERT INTO p (nome, id) VALUES ('Caio', 3);
+SELECT * FROM p WHERE (id > 1 OR email IS NULL) AND nome <> 'Bia';
+UPDATE p SET email = 'ana@x' WHERE id = 1;
+DELETE FROM p WHERE email IS NULL;
+DROP TABLE p;
+```
+
+- Tipos: `INT` e `TEXT`. Strings com aspas simples ou duplas; aspa repetida
+  dentro dela é uma aspa (`'it''s'`).
+- Restrições de coluna: `NOT NULL`, `PRIMARY KEY`, `UNIQUE`. Chaves de várias
+  colunas: `PRIMARY KEY (a, b)`, `UNIQUE (a, b)`.
+- `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` e
+  parênteses. Comparar com `NULL` dá "desconhecido" e a linha não passa, como
+  no SQL padrão; use `IS NULL`.
+- `INSERT` com várias linhas grava todas ou nenhuma.
 
 ## Fluxo de um comando
 
@@ -154,6 +176,12 @@ O `CREATE TABLE` cria primeiro o arquivo de dados e depois grava no catálogo.
 Se o programa cair no meio, sobra no máximo um arquivo que o catálogo não
 enxerga. Ele não é apagado nem sobrescrito: criar uma tabela com esse nome dá
 erro até alguém remover o arquivo.
+
+`INSERT` acrescenta no fim do arquivo. `UPDATE` e `DELETE` leem a tabela,
+mudam na memória e chamam `ReplaceRows`, que grava tudo em `<nome>.marina.tmp`
+e renomeia por cima do original: se o programa cair no meio, o original
+continua inteiro. O `DROP TABLE` regrava o catálogo do mesmo jeito, sem as
+linhas da tabela e das chaves dela, e depois apaga o arquivo de dados.
 
 Os tipos aceitos são `INT` e `TEXT`. O CSV cuida de vírgulas e aspas dentro
 dos valores. O único caso especial é um registro com um só campo vazio, que é

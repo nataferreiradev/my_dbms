@@ -31,7 +31,10 @@ func TestExecute(t *testing.T) {
 		{input: "SELECT idade FROM users;", wantErr: true},
 		{input: "SELECT name, definition FROM _catalog;", want: "name  | definition\n------+-----------------\nusers | id INT,nome TEXT\n(1 linha)"},
 		{input: `INSERT INTO _catalog VALUES ("table", "x", "x", "id INT");`, wantErr: true},
-		{input: "DROP TABLE users;", wantErr: true},
+		{input: "DROP TABLE nada;", wantErr: true},
+		{input: "DROP TABLE users;", want: "tabela users removida"},
+		{input: "SELECT * FROM users;", wantErr: true},
+		{input: "DESTROY TABLE users;", wantErr: true},
 	}
 
 	for _, s := range steps {
@@ -227,6 +230,50 @@ func TestWhere(t *testing.T) {
 				t.Errorf("ids = %q, want %q\n%s", ids, tt.want, got)
 			}
 		})
+	}
+}
+
+func TestUpdateDelete(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, idade INT);", want: "tabela p criada"},
+		{input: "INSERT INTO p VALUES (1, 'Ana', 30), (2, 'Bia', 9), (3, 'Caio', 10);", want: "3 linhas inseridas"},
+		{input: "UPDATE p SET idade = 31 WHERE nome = 'Ana';", want: "1 linha atualizada"},
+		{input: "UPDATE p SET idade = NULL, nome = 'Bea' WHERE id = 2;", want: "1 linha atualizada"},
+		{input: "UPDATE p SET idade = 0 WHERE id > 99;", want: "0 linhas atualizadas"},
+		{input: "UPDATE p SET id = 1 WHERE id = 3;", wantErr: true},
+		{input: "UPDATE p SET nome = NULL;", wantErr: true},
+		{input: "UPDATE p SET idade = 'x';", wantErr: true},
+		{input: "UPDATE p SET altura = 1;", wantErr: true},
+		{input: "UPDATE p SET idade = 1, idade = 2;", wantErr: true},
+		{input: "SELECT * FROM p;", want: "id | nome | idade\n---+------+------\n1  | Ana  | 31\n2  | Bea  | NULL\n3  | Caio | 10\n(3 linhas)"},
+		{input: "DELETE FROM p WHERE idade IS NULL;", want: "1 linha removida"},
+		{input: "DELETE FROM p WHERE nada = 1;", wantErr: true},
+		{input: "DELETE FROM p WHERE idade < 0;", want: "0 linhas removidas"},
+		{input: "SELECT id FROM p;", want: "id\n--\n1\n3\n(2 linhas)"},
+		{input: "INSERT INTO p VALUES (2, 'Bia', 9);", want: "1 linha inserida"},
+		{input: "DELETE FROM p;", want: "3 linhas removidas"},
+		{input: "SELECT * FROM p;", want: "id | nome | idade\n---+------+------\n(0 linhas)"},
+		{input: "DELETE FROM _catalog;", wantErr: true},
+		{input: "DROP TABLE _catalog;", wantErr: true},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
 	}
 }
 

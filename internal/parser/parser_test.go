@@ -78,6 +78,33 @@ func TestParse(t *testing.T) {
 			want:  &Select{Table: "t", Columns: []string{"nome", "id"}},
 		},
 		{
+			input: "UPDATE t SET nome = 'Bia', idade = NULL WHERE id = 2",
+			want: &Update{
+				Table: "t",
+				Set: []Assignment{
+					{Column: "nome", Value: Literal{String, "Bia"}},
+					{Column: "idade", Value: Literal{Null, "NULL"}},
+				},
+				Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "2"}},
+			},
+		},
+		{
+			input: "update t set a=1",
+			want:  &Update{Table: "t", Set: []Assignment{{Column: "a", Value: Literal{Number, "1"}}}},
+		},
+		{
+			input: "DELETE FROM t WHERE a IS NULL;",
+			want:  &Delete{Table: "t", Where: &IsNull{Expr: ColumnRef{"a"}}},
+		},
+		{
+			input: "DELETE FROM t",
+			want:  &Delete{Table: "t"},
+		},
+		{
+			input: "DROP TABLE t;",
+			want:  &DropTable{Name: "t"},
+		},
+		{
 			// AND liga mais forte que OR.
 			input: "SELECT * FROM t WHERE a = 1 OR b > 'x' AND c IS NOT NULL",
 			want: &Select{Table: "t", Where: &Logical{
@@ -159,6 +186,15 @@ func TestParseErrors(t *testing.T) {
 		{input: "SELECT * FROM t WHERE (a = 1", wantErr: `esperava ")"`},
 		{input: "SELECT * FROM t WHERE a IS 1", wantErr: `esperava "NULL"`},
 		{input: "SELECT * FROM t WHERE a = 1 b = 2", wantErr: "esperava o fim do comando"},
+		{input: "UPDATE t", wantErr: `esperava "SET"`},
+		{input: "UPDATE t SET", wantErr: "esperava um nome"},
+		{input: "UPDATE t SET a 1", wantErr: `esperava "="`},
+		{input: "UPDATE t SET a = b", wantErr: "esperava um valor"},
+		{input: "UPDATE t SET a = 1,", wantErr: "esperava um nome"},
+		{input: "DELETE t", wantErr: `esperava "FROM"`},
+		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
+		{input: "DROP t", wantErr: `esperava "TABLE"`},
+		{input: "DROP TABLE t, u", wantErr: "esperava o fim do comando"},
 	}
 
 	for _, tt := range tests {

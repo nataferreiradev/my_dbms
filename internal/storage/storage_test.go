@@ -162,6 +162,89 @@ func TestInsertRowsBatch(t *testing.T) {
 	}
 }
 
+func TestReplaceRows(t *testing.T) {
+	keys := []Key{{Kind: PrimaryKey, Columns: []string{"id"}}}
+	tests := []struct {
+		name    string
+		rows    [][]Value
+		wantErr bool
+	}{
+		{name: "troca", rows: [][]Value{texts("2", "Bia"), {Text("3"), Null}}},
+		{name: "esvazia", rows: nil},
+		{name: "chave repetida", rows: [][]Value{texts("2", "Bia"), texts("2", "Caio")}, wantErr: true},
+		{name: "NULL na chave primária", rows: [][]Value{{Null, Text("Bia")}}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, _ := Open(t.TempDir())
+			db.CreateTable("t", userColumns, keys)
+			before := [][]Value{texts("1", "Ana")}
+			db.InsertRows("t", before)
+
+			err := db.ReplaceRows("t", tt.rows)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ReplaceRows erro = %v, wantErr %v", err, tt.wantErr)
+			}
+			want := tt.rows
+			if tt.wantErr {
+				want = before
+			}
+			table, _ := db.ReadTable("t")
+			if len(table.Rows) != len(want) || (len(want) > 0 && !reflect.DeepEqual(table.Rows, want)) {
+				t.Errorf("linhas = %v, want %v", table.Rows, want)
+			}
+		})
+	}
+}
+
+func TestDropTable(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(dir)
+	db.CreateTable("users", userColumns, []Key{{Kind: PrimaryKey, Columns: []string{"id"}}})
+	db.CreateTable("outra", userColumns, nil)
+	insertOne(db, "users", texts("1", "Ana"))
+
+	if err := db.DropTable("users"); err != nil {
+		t.Fatalf("DropTable: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "users.marina")); err == nil {
+		t.Error("o arquivo da tabela deveria ter sido apagado")
+	}
+
+	// Reabrir confere que o catálogo no disco ficou sem a tabela e a chave.
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ReadTable("users"); err == nil {
+		t.Error("tabela apagada ainda existe")
+	}
+	catalog, _ := db.ReadTable("_catalog")
+	if want := [][]Value{texts("table", "outra", "outra", "id INT,nome TEXT")}; !reflect.DeepEqual(catalog.Rows, want) {
+		t.Errorf("catálogo = %v, want %v", catalog.Rows, want)
+	}
+
+	// O nome fica livre para uma tabela nova.
+	if err := db.CreateTable("users", userColumns, nil); err != nil {
+		t.Errorf("recriar tabela apagada: %v", err)
+	}
+}
+
+func TestDropTableErrors(t *testing.T) {
+	db, _ := Open(t.TempDir())
+
+	if err := db.DropTable("nada"); err == nil {
+		t.Error("esperava erro ao apagar tabela inexistente")
+	}
+	if err := db.DropTable("_catalog"); err == nil {
+		t.Error("esperava erro ao apagar o catálogo")
+	}
+	if err := db.ReplaceRows("_catalog", nil); err == nil {
+		t.Error("esperava erro ao regravar o catálogo")
+	}
+}
+
 func TestTableSchema(t *testing.T) {
 	db, _ := Open(t.TempDir())
 	db.CreateTable("users", userColumns, nil)

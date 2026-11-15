@@ -29,6 +29,15 @@ func execute(db *storage.DB, input string) (string, error) {
 		return insert(db, s)
 	case *parser.Select:
 		return selectRows(db, s)
+	case *parser.Update:
+		return update(db, s)
+	case *parser.Delete:
+		return deleteRows(db, s)
+	case *parser.DropTable:
+		if err := db.DropTable(s.Name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("tabela %s removida", s.Name), nil
 	}
 	return "", fmt.Errorf("comando não suportado: %s", input)
 }
@@ -100,6 +109,76 @@ func insert(db *storage.DB, s *parser.Insert) (string, error) {
 		return "", err
 	}
 	return count(len(rows), "linha inserida", "linhas inseridas"), nil
+}
+
+// update troca os valores das colunas do SET nas linhas que passam no WHERE
+// e grava a tabela de volta.
+func update(db *storage.DB, s *parser.Update) (string, error) {
+	table, err := db.ReadTable(s.Table)
+	if err != nil {
+		return "", err
+	}
+	where, err := compileWhere(s.Where, table.Schema)
+	if err != nil {
+		return "", err
+	}
+
+	positions := make([]int, len(s.Set))
+	values := make([]storage.Value, len(s.Set))
+	for i, a := range s.Set {
+		p := table.ColumnIndex(a.Column)
+		if p < 0 {
+			return "", fmt.Errorf("coluna %q não existe na tabela %s", a.Column, s.Table)
+		}
+		if slices.Contains(positions[:i], p) {
+			return "", fmt.Errorf("coluna %q repetida no SET", a.Column)
+		}
+		col := table.Columns[p]
+		if values[i], err = literalValue(a.Value, col.Type); err != nil {
+			return "", fmt.Errorf("coluna %s: %w", col.Name, err)
+		}
+		positions[i] = p
+	}
+
+	n := 0
+	for _, row := range table.Rows {
+		if where(row) != triTrue {
+			continue
+		}
+		for i, p := range positions {
+			row[p] = values[i]
+		}
+		n++
+	}
+	if n > 0 {
+		if err := db.ReplaceRows(s.Table, table.Rows); err != nil {
+			return "", err
+		}
+	}
+	return count(n, "linha atualizada", "linhas atualizadas"), nil
+}
+
+// deleteRows apaga as linhas que passam no WHERE. Sem WHERE, apaga todas.
+func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
+	table, err := db.ReadTable(s.Table)
+	if err != nil {
+		return "", err
+	}
+	where, err := compileWhere(s.Where, table.Schema)
+	if err != nil {
+		return "", err
+	}
+
+	kept := slices.DeleteFunc(slices.Clone(table.Rows), func(row []storage.Value) bool {
+		return where(row) == triTrue
+	})
+	n := len(table.Rows) - len(kept)
+	if n > 0 {
+		if err := db.ReplaceRows(s.Table, kept); err != nil {
+			return "", err
+		}
+	}
+	return count(n, "linha removida", "linhas removidas"), nil
 }
 
 // count escreve "1 linha inserida" ou "3 linhas inseridas".

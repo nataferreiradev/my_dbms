@@ -39,6 +39,10 @@ var keywords = map[string]bool{
 	"NOT":     true,
 	"NULL":    true,
 	"IS":      true,
+	"DELETE":  true,
+	"UPDATE":  true,
+	"SET":     true,
+	"DROP":    true,
 }
 
 var operators = map[string]bool{
