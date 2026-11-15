@@ -19,6 +19,8 @@ gofmt -l .               # deve sair vazio
   comando e como adicionar um comando novo. Leia antes de mudar a arquitetura
   e atualize quando ela mudar.
 - `docs/commits.md`: padrão de commits (Conventional Commits, em inglês).
+- `docs/en/`: versão em inglês dos mesmos documentos (`structure.md`,
+  `commits.md`). Ao alterar um doc, atualize as duas versões no mesmo commit.
 
 ## Regras de código
 

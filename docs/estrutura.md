@@ -19,7 +19,8 @@ my_dbms/
 │   └── storage/          → persistência em disco
 │       ├── storage.go    → DB: CreateTable, ReadTable
 │       └── storage_test.go
-├── docs/                 → documentação do projeto
+├── docs/                 → documentação do projeto (português)
+│   └── en/               → versão em inglês
 └── data/                 → criado em tempo de execução (ignorado pelo git)
 ```
 
