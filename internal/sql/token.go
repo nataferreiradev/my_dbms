@@ -24,6 +24,8 @@ var keywords = map[string]bool{
 	"OR":     true,
 	"CREATE": true,
 	"TABLE":  true,
+	"INT":    true,
+	"TEXT":   true,
 }
 
 var operators = map[string]bool{

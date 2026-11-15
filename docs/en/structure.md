@@ -56,8 +56,15 @@ which leaves us free to change the internal API.
 
 ## On-disk format
 
-Each table is a file at `data/<name>.marina`. Right now it is created empty;
-the row format will be defined together with `INSERT`.
+Each table is a file at `data/<name>.marina`. The first line holds the
+schema, with columns separated by commas:
+
+```
+id INT,nome TEXT
+```
+
+The accepted types are `INT` and `TEXT`. The row format will be defined
+together with `INSERT`.
 
 ## Adding a command
 

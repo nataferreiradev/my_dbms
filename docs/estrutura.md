@@ -55,8 +55,15 @@ nos deixa livres para mudar a API interna.
 
 ## Formato em disco
 
-Cada tabela é um arquivo `data/<nome>.marina`. Hoje ele é criado vazio; o
-formato das linhas ainda vai ser definido junto com o `INSERT`.
+Cada tabela é um arquivo `data/<nome>.marina`. A primeira linha guarda o
+schema, com as colunas separadas por vírgula:
+
+```
+id INT,nome TEXT
+```
+
+Os tipos aceitos são `INT` e `TEXT`. O formato das linhas de dados ainda vai
+ser definido junto com o `INSERT`.
 
 ## Como adicionar um comando
 
