@@ -250,8 +250,10 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	}
 
 	headers := make([]string, len(indexes))
+	right := make([]bool, len(indexes))
 	for j, i := range indexes {
 		headers[j] = table.Columns[i].Name
+		right[j] = table.Columns[i].Type == "INT"
 	}
 	var rows [][]string
 	for _, row := range table.Rows {
@@ -264,5 +266,5 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 		}
 		rows = append(rows, cells)
 	}
-	return formatTable(headers, rows), nil
+	return formatTable(headers, right, rows), nil
 }

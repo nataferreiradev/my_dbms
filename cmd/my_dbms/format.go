@@ -10,11 +10,13 @@ import (
 //
 //	id | nome
 //	---+-----
-//	1  | Ana
+//	 1 | Ana
 //	(1 linha)
 //
-// A largura conta runas, não bytes, para acentos não desalinharem.
-func formatTable(headers []string, rows [][]string) string {
+// As colunas marcadas em right (as numéricas) ficam alinhadas à direita,
+// cabeçalho incluído. A largura conta runas, não bytes, para acentos não
+// desalinharem.
+func formatTable(headers []string, right []bool, rows [][]string) string {
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = utf8.RuneCountInString(h)
@@ -31,10 +33,14 @@ func formatTable(headers []string, rows [][]string) string {
 			if i > 0 {
 				b.WriteString(" | ")
 			}
+			pad := strings.Repeat(" ", widths[i]-utf8.RuneCountInString(cell))
+			if right[i] {
+				b.WriteString(pad)
+			}
 			b.WriteString(cell)
 			// A última coluna não leva espaço no fim.
-			if i < len(cells)-1 {
-				b.WriteString(strings.Repeat(" ", widths[i]-utf8.RuneCountInString(cell)))
+			if !right[i] && i < len(cells)-1 {
+				b.WriteString(pad)
 			}
 		}
 		b.WriteString("\n")

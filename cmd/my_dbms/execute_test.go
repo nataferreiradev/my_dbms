@@ -25,9 +25,9 @@ func TestExecute(t *testing.T) {
 		{input: "select * from users", want: "id | nome\n---+-----\n(0 linhas)"},
 		{input: `insert into users values (1, "Ana");`, want: "1 linha inserida"},
 		{input: `INSERT INTO users VALUES (007, "Silva, Bruno");`, want: "1 linha inserida"},
-		{input: "SELECT * FROM users;", want: "id | nome\n---+-------------\n1  | Ana\n7  | Silva, Bruno\n(2 linhas)"},
+		{input: "SELECT * FROM users;", want: "id | nome\n---+-------------\n 1 | Ana\n 7 | Silva, Bruno\n(2 linhas)"},
 		{input: "SELECT nome FROM users;", want: "nome\n------------\nAna\nSilva, Bruno\n(2 linhas)"},
-		{input: "SELECT nome, id, nome FROM users;", want: "nome         | id | nome\n-------------+----+-------------\nAna          | 1  | Ana\nSilva, Bruno | 7  | Silva, Bruno\n(2 linhas)"},
+		{input: "SELECT nome, id, nome FROM users;", want: "nome         | id | nome\n-------------+----+-------------\nAna          |  1 | Ana\nSilva, Bruno |  7 | Silva, Bruno\n(2 linhas)"},
 		{input: "SELECT idade FROM users;", wantErr: true},
 		{input: "SELECT name, definition FROM _catalog;", want: "name  | definition\n------+-----------------\nusers | id INT,nome TEXT\n(1 linha)"},
 		{input: `INSERT INTO _catalog VALUES ("table", "x", "x", "id INT");`, wantErr: true},
@@ -154,7 +154,7 @@ func TestInsertColumnsAndRows(t *testing.T) {
 		{input: "INSERT INTO p (id, nome) VALUES (4, 'Dani', 'x');", wantErr: true},
 		{input: "INSERT INTO p (id) VALUES (4), (3);", wantErr: true},
 		{input: "INSERT INTO p (id) VALUES (4), (4);", wantErr: true},
-		{input: "SELECT * FROM p;", want: "id | nome | cidade\n---+------+-------\n1  | Ana  | Recife\n2  | Bia  | Natal\n3  | Caio | NULL\n(3 linhas)"},
+		{input: "SELECT * FROM p;", want: "id | nome | cidade\n---+------+-------\n 1 | Ana  | Recife\n 2 | Bia  | Natal\n 3 | Caio | NULL\n(3 linhas)"},
 	}
 
 	for _, s := range steps {
@@ -226,6 +226,7 @@ func TestWhere(t *testing.T) {
 			// Tira cabeçalho, separador e contagem e fica só com os ids.
 			lines := strings.Split(got, "\n")
 			ids := strings.Join(lines[2:len(lines)-1], ",")
+			ids = strings.ReplaceAll(ids, " ", "")
 			if ids != tt.want {
 				t.Errorf("ids = %q, want %q\n%s", ids, tt.want, got)
 			}
@@ -254,11 +255,11 @@ func TestUpdateDelete(t *testing.T) {
 		{input: "UPDATE p SET idade = 'x';", wantErr: true},
 		{input: "UPDATE p SET altura = 1;", wantErr: true},
 		{input: "UPDATE p SET idade = 1, idade = 2;", wantErr: true},
-		{input: "SELECT * FROM p;", want: "id | nome | idade\n---+------+------\n1  | Ana  | 31\n2  | Bea  | NULL\n3  | Caio | 10\n(3 linhas)"},
+		{input: "SELECT * FROM p;", want: "id | nome | idade\n---+------+------\n 1 | Ana  |    31\n 2 | Bea  |  NULL\n 3 | Caio |    10\n(3 linhas)"},
 		{input: "DELETE FROM p WHERE idade IS NULL;", want: "1 linha removida"},
 		{input: "DELETE FROM p WHERE nada = 1;", wantErr: true},
 		{input: "DELETE FROM p WHERE idade < 0;", want: "0 linhas removidas"},
-		{input: "SELECT id FROM p;", want: "id\n--\n1\n3\n(2 linhas)"},
+		{input: "SELECT id FROM p;", want: "id\n--\n 1\n 3\n(2 linhas)"},
 		{input: "INSERT INTO p VALUES (2, 'Bia', 9);", want: "1 linha inserida"},
 		{input: "DELETE FROM p;", want: "3 linhas removidas"},
 		{input: "SELECT * FROM p;", want: "id | nome | idade\n---+------+------\n(0 linhas)"},
