@@ -19,7 +19,7 @@ func benchTable(b *testing.B, n int) *DB {
 	if err != nil {
 		b.Fatal(err)
 	}
-	keys := []Key{{Kind: PrimaryKey, Columns: []string{"id"}}}
+	keys := []Index{{Kind: PrimaryKey, Columns: []string{"id"}}}
 	if err := db.CreateTable("t", userColumns, keys); err != nil {
 		b.Fatal(err)
 	}

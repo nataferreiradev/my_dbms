@@ -30,8 +30,9 @@ type server struct {
 	db *storage.DB
 
 	// mu deixa vários SELECT rodarem juntos, mas um comando que escreve roda
-	// sozinho. O storage ainda lê e grava a tabela inteira de uma vez: dois
-	// UPDATE ao mesmo tempo leriam a mesma versão e um apagaria o outro.
+	// sozinho. O storage aceita várias leituras ao mesmo tempo, mas só uma
+	// transação de escrita: cada uma guarda as páginas que alterou até o
+	// commit, e duas ao mesmo tempo gravariam uma por cima da outra.
 	mu sync.RWMutex
 }
 

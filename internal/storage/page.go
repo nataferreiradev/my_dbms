@@ -11,25 +11,41 @@ import (
 )
 
 // Um arquivo .mari é uma sequência de páginas de pageSize bytes. A página 0
-// é o cabeçalho do arquivo, e as outras guardam os registros:
+// é o cabeçalho do arquivo, e as outras guardam registros:
 //
 //	página 0:  "MRNA" | versão (uint16) | page_size (uint16) | zeros
-//	página N:  nº de slots (uint16) | início dos registros (uint16) | slot 0 | slot 1 | ...
+//	página N:  tipo (1 byte) | livre (1 byte) | nº de slots (uint16) |
+//	           início dos registros (uint16) | link (uint32) | slot 0 | slot 1 | ...
 //	           espaço livre
 //	           ... | registro 1 | registro 0
 //
 // Cada slot tem 4 bytes: offset e tamanho do registro na página (uint16). Os
 // slots crescem do começo da página e os registros do fim, e a página está
-// cheia quando os dois se encontram. Todos os inteiros são little endian.
+// cheia quando os dois se encontram. Todos os inteiros do cabeçalho são
+// little endian.
+//
+// O tipo diz o que a página guarda. Numa página de tabela (pageHeap), o
+// número do slot faz parte do endereço da linha (RID), então ele nunca muda:
+// apagar uma linha marca o slot como morto (tamanho 0), e compactar a página
+// move os registros sem renumerar os slots. As páginas de índice (pageLeaf e
+// pageInternal) guardam as entradas da B+tree em ordem, e o link aponta para
+// outra página (veja btree.go).
 const (
 	fileMagic      = "MRNA"
-	fileVersion    = 1
-	pageHeaderSize = 4
+	fileVersion    = 2
+	pageHeaderSize = 10
 	slotSize       = 4
 
 	// Os offsets dentro da página são uint16, por isso o máximo é 32 KB.
 	minPageSize = 1024
 	maxPageSize = 32768
+)
+
+// Tipos de página.
+const (
+	pageHeap     byte = 1 // registros de uma tabela
+	pageLeaf     byte = 2 // folha da B+tree; link = próxima folha
+	pageInternal byte = 3 // nó interno da B+tree; link = filho mais à direita
 )
 
 // checkPageSize confere se o tamanho de página é uma potência de 2 entre
@@ -39,6 +55,11 @@ func checkPageSize(size int) error {
 		return fmt.Errorf("page_size %d inválido: precisa ser potência de 2 entre %d e %d", size, minPageSize, maxPageSize)
 	}
 	return nil
+}
+
+// maxRecordSize é o maior registro que cabe numa página vazia, com o slot.
+func maxRecordSize(pageSize int) int {
+	return pageSize - pageHeaderSize - slotSize
 }
 
 // encodeRecord grava uma linha em bytes, guiada pelos tipos das colunas:
@@ -121,46 +142,147 @@ func decodeRecord(columns []Column, rec []byte) ([]Value, error) {
 	return row, nil
 }
 
-// newPage devolve uma página de dados vazia: sem slots, e com os registros
-// começando no fim.
-func newPage(size int) []byte {
+// newPage devolve uma página vazia do tipo kind: sem slots, e com os
+// registros começando no fim.
+func newPage(size int, kind byte) []byte {
 	page := make([]byte, size)
-	binary.LittleEndian.PutUint16(page[2:], uint16(size))
+	page[0] = kind
+	binary.LittleEndian.PutUint16(page[4:], uint16(size))
 	return page
 }
 
-// addRecord grava rec na página, se couber junto com um slot novo. O
-// registro vai para o fim do espaço livre.
-func addRecord(page, rec []byte) bool {
-	count := int(binary.LittleEndian.Uint16(page[0:]))
-	start := int(binary.LittleEndian.Uint16(page[2:]))
-	slot := pageHeaderSize + count*slotSize
-	if start-len(rec) < slot+slotSize {
-		return false
+func pageKind(page []byte) byte         { return page[0] }
+func slotCount(page []byte) int         { return int(binary.LittleEndian.Uint16(page[2:])) }
+func recordsStart(page []byte) int      { return int(binary.LittleEndian.Uint16(page[4:])) }
+func pageLink(page []byte) uint32       { return binary.LittleEndian.Uint32(page[6:]) }
+func setPageLink(page []byte, n uint32) { binary.LittleEndian.PutUint32(page[6:], n) }
+
+// slot devolve o offset e o tamanho do registro no slot i.
+func slot(page []byte, i int) (offset, size int) {
+	at := pageHeaderSize + i*slotSize
+	return int(binary.LittleEndian.Uint16(page[at:])), int(binary.LittleEndian.Uint16(page[at+2:]))
+}
+
+func setSlot(page []byte, i, offset, size int) {
+	at := pageHeaderSize + i*slotSize
+	binary.LittleEndian.PutUint16(page[at:], uint16(offset))
+	binary.LittleEndian.PutUint16(page[at+2:], uint16(size))
+}
+
+// freeSpace devolve o espaço livre contínuo (entre os slots e os registros) e
+// o total, somando os buracos deixados por registros apagados ou encolhidos.
+func freeSpace(page []byte) (contiguous, total int) {
+	count := slotCount(page)
+	contiguous = recordsStart(page) - pageHeaderSize - count*slotSize
+	used := 0
+	for i := range count {
+		_, size := slot(page, i)
+		used += size
+	}
+	total = len(page) - pageHeaderSize - count*slotSize - used
+	return contiguous, total
+}
+
+// addRecord grava rec na página e devolve o slot dele. Reaproveita um slot
+// morto, se houver, e compacta a página quando o espaço livre está
+// espalhado em buracos. false quer dizer que não coube.
+func addRecord(page, rec []byte) (int, bool) {
+	count := slotCount(page)
+	i := count
+	need := len(rec) + slotSize
+	if pageKind(page) == pageHeap {
+		for j := range count {
+			if _, size := slot(page, j); size == 0 {
+				i, need = j, len(rec)
+				break
+			}
+		}
+	}
+	contiguous, total := freeSpace(page)
+	if total < need {
+		return 0, false
+	}
+	if contiguous < need {
+		compactPage(page)
 	}
 
-	start -= len(rec)
+	start := recordsStart(page) - len(rec)
 	copy(page[start:], rec)
-	binary.LittleEndian.PutUint16(page[slot:], uint16(start))
-	binary.LittleEndian.PutUint16(page[slot+2:], uint16(len(rec)))
-	binary.LittleEndian.PutUint16(page[0:], uint16(count+1))
-	binary.LittleEndian.PutUint16(page[2:], uint16(start))
+	binary.LittleEndian.PutUint16(page[4:], uint16(start))
+	if i == count {
+		binary.LittleEndian.PutUint16(page[2:], uint16(count+1))
+	}
+	setSlot(page, i, start, len(rec))
+	return i, true
+}
+
+// deleteRecord marca o slot como morto. Os bytes do registro viram um buraco,
+// que a próxima compactação recupera.
+func deleteRecord(page []byte, i int) {
+	setSlot(page, i, 0, 0)
+}
+
+// updateRecord troca o registro do slot i por rec, sem mudar o número do
+// slot. false quer dizer que não coube na página, e ela fica como estava.
+func updateRecord(page []byte, i int, rec []byte) bool {
+	offset, size := slot(page, i)
+	if len(rec) <= size {
+		// Cabe no lugar do antigo; a sobra vira buraco.
+		copy(page[offset:], rec)
+		setSlot(page, i, offset, len(rec))
+		return true
+	}
+	if _, total := freeSpace(page); total+size < len(rec) {
+		return false
+	}
+	setSlot(page, i, 0, 0)
+	if contiguous, _ := freeSpace(page); contiguous < len(rec) {
+		compactPage(page)
+	}
+	start := recordsStart(page) - len(rec)
+	copy(page[start:], rec)
+	binary.LittleEndian.PutUint16(page[4:], uint16(start))
+	setSlot(page, i, start, len(rec))
 	return true
 }
 
-// pageRecords devolve os registros da página, na ordem dos slots.
+// compactPage junta os registros no fim da página, eliminando os buracos.
+// Os slots continuam com os mesmos números; só os offsets mudam.
+func compactPage(page []byte) {
+	count := slotCount(page)
+	records := make([][]byte, count)
+	for i := range count {
+		offset, size := slot(page, i)
+		if size > 0 {
+			records[i] = append([]byte(nil), page[offset:offset+size]...)
+		}
+	}
+	start := len(page)
+	for i, rec := range records {
+		if rec == nil {
+			continue
+		}
+		start -= len(rec)
+		copy(page[start:], rec)
+		setSlot(page, i, start, len(rec))
+	}
+	binary.LittleEndian.PutUint16(page[4:], uint16(start))
+}
+
+// pageRecords devolve os registros da página, indexados pelo número do slot.
+// Slots mortos aparecem como nil. Os registros apontam para dentro da página.
 func pageRecords(page []byte) ([][]byte, error) {
-	count := int(binary.LittleEndian.Uint16(page[0:]))
-	start := int(binary.LittleEndian.Uint16(page[2:]))
+	count, start := slotCount(page), recordsStart(page)
 	if pageHeaderSize+count*slotSize > start || start > len(page) {
 		return nil, fmt.Errorf("cabeçalho da página inválido: %d slots e registros a partir do byte %d", count, start)
 	}
 
 	records := make([][]byte, count)
 	for i := range records {
-		slot := pageHeaderSize + i*slotSize
-		offset := int(binary.LittleEndian.Uint16(page[slot:]))
-		size := int(binary.LittleEndian.Uint16(page[slot+2:]))
+		offset, size := slot(page, i)
+		if size == 0 {
+			continue
+		}
 		if offset < start || offset+size > len(page) {
 			return nil, fmt.Errorf("slot %d aponta para fora da área de registros", i)
 		}
@@ -169,63 +291,72 @@ func pageRecords(page []byte) ([][]byte, error) {
 	return records, nil
 }
 
+// buildPage monta uma página nova do tipo kind com os registros em ordem, um
+// por slot. false quer dizer que eles não cabem numa página só.
+func buildPage(size int, kind byte, link uint32, records [][]byte) ([]byte, bool) {
+	if pageHeaderSize+recordsSize(records) > size {
+		return nil, false
+	}
+	page := newPage(size, kind)
+	setPageLink(page, link)
+	for _, rec := range records {
+		addRecord(page, rec)
+	}
+	return page, true
+}
+
+// recordsSize é o espaço que os registros ocupam numa página, com os slots.
+func recordsSize(records [][]byte) int {
+	n := 0
+	for _, rec := range records {
+		n += len(rec) + slotSize
+	}
+	return n
+}
+
+// fileHeader monta a página 0 de um arquivo .mari.
+func fileHeader(pageSize int) []byte {
+	page := make([]byte, pageSize)
+	copy(page, fileMagic)
+	binary.LittleEndian.PutUint16(page[4:], fileVersion)
+	binary.LittleEndian.PutUint16(page[6:], uint16(pageSize))
+	return page
+}
+
 // readHeader confere a página 0 e devolve o page_size gravado nela.
 func readHeader(data []byte) (int, error) {
 	if len(data) < 8 || string(data[:4]) != fileMagic {
 		return 0, errors.New("não é um arquivo do my_dbms (pode ser do formato antigo, em CSV)")
 	}
 	if v := binary.LittleEndian.Uint16(data[4:]); v != fileVersion {
-		return 0, fmt.Errorf("versão %d do formato não é suportada", v)
+		return 0, fmt.Errorf("versão %d do formato não é suportada (esta versão do my_dbms lê a %d)", v, fileVersion)
 	}
 	return int(binary.LittleEndian.Uint16(data[6:])), nil
 }
 
-// readPages lê um arquivo .mari e devolve as páginas de dados, sem a
-// página 0.
-func readPages(path string, pageSize int) ([][]byte, error) {
-	data, err := os.ReadFile(path)
+// createFile cria um arquivo .mari novo, com a página 0 e as páginas dadas, e
+// só volta depois do fsync do arquivo e do diretório. Se o arquivo já existe,
+// é erro: ele nunca é sobrescrito.
+func createFile(path string, pageSize int, pages ...[]byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	size, err := readHeader(data)
-	if err != nil {
-		return nil, err
-	}
-	if size != pageSize {
-		return nil, fmt.Errorf("arquivo com páginas de %d bytes, mas o banco usa %d", size, pageSize)
-	}
-	if len(data)%pageSize != 0 {
-		return nil, fmt.Errorf("tamanho de %d bytes não é múltiplo da página (%d)", len(data), pageSize)
-	}
-
-	var pages [][]byte
-	for off := pageSize; off < len(data); off += pageSize {
-		pages = append(pages, data[off:off+pageSize])
-	}
-	return pages, nil
-}
-
-// writePages troca o conteúdo de um arquivo .mari pela página 0 e pelas
-// páginas de dados. Grava num arquivo temporário e renomeia por cima do
-// original: se o programa cair no meio, o original continua inteiro. O Sync
-// antes do rename garante que os dados chegaram ao disco antes de o nome
-// apontar para eles; sem ele, uma queda de energia pode deixar o arquivo
-// novo vazio.
-func writePages(path string, pageSize int, pages [][]byte) error {
-	data := make([]byte, pageSize, pageSize*(len(pages)+1))
-	copy(data, fileMagic)
-	binary.LittleEndian.PutUint16(data[4:], fileVersion)
-	binary.LittleEndian.PutUint16(data[6:], uint16(pageSize))
+	data := fileHeader(pageSize)
 	for _, p := range pages {
 		data = append(data, p...)
 	}
-
-	tmp := path + ".tmp"
-	if err := writeSynced(tmp, data); err != nil {
-		os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return syncDir(filepath.Dir(path))
@@ -248,9 +379,9 @@ func writeSynced(path string, data []byte) error {
 	return f.Close()
 }
 
-// syncDir faz o fsync do diretório, para que o rename também chegue ao
-// disco. No Windows não dá para abrir um diretório assim, e o NTFS já
-// registra o rename no journal dele.
+// syncDir faz o fsync do diretório, para que criar, renomear ou apagar um
+// arquivo também chegue ao disco. No Windows não dá para abrir um diretório
+// assim, e o NTFS já registra essas operações no journal dele.
 func syncDir(dir string) error {
 	if runtime.GOOS == "windows" {
 		return nil

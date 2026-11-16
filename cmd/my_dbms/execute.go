@@ -56,9 +56,9 @@ func createTable(db *storage.DB, s *parser.CreateTable) (string, error) {
 	for i, c := range s.Columns {
 		columns[i] = storage.Column{Name: c.Name, Type: c.Type, NotNull: c.NotNull}
 	}
-	keys := make([]storage.Key, len(s.Keys))
+	keys := make([]storage.Index, len(s.Keys))
 	for i, k := range s.Keys {
-		keys[i] = storage.Key{Kind: storage.Unique, Columns: k.Columns}
+		keys[i] = storage.Index{Kind: storage.Unique, Columns: k.Columns}
 		if k.Primary {
 			keys[i].Kind = storage.PrimaryKey
 		}
@@ -120,14 +120,15 @@ func insert(db *storage.DB, s *parser.Insert) (string, error) {
 	return count(len(rows), "linha inserida", "linhas inseridas"), nil
 }
 
-// update troca os valores das colunas do SET nas linhas que passam no WHERE
-// e grava a tabela de volta.
+// update troca os valores das colunas do SET nas linhas que passam no WHERE.
+// Primeiro junta todas as linhas que mudam, depois grava: mudar enquanto lê
+// faria uma linha que mudou de lugar ser lida (e mudada) de novo.
 func update(db *storage.DB, s *parser.Update) (string, error) {
-	table, err := db.ReadTable(s.Table)
+	schema, err := db.TableSchema(s.Table)
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, table.Schema)
+	where, err := compileWhere(s.Where, schema)
 	if err != nil {
 		return "", err
 	}
@@ -135,59 +136,70 @@ func update(db *storage.DB, s *parser.Update) (string, error) {
 	positions := make([]int, len(s.Set))
 	values := make([]storage.Value, len(s.Set))
 	for i, a := range s.Set {
-		p := table.ColumnIndex(a.Column)
+		p := schema.ColumnIndex(a.Column)
 		if p < 0 {
 			return "", fmt.Errorf("coluna %q não existe na tabela %s", a.Column, s.Table)
 		}
 		if slices.Contains(positions[:i], p) {
 			return "", fmt.Errorf("coluna %q repetida no SET", a.Column)
 		}
-		col := table.Columns[p]
+		col := schema.Columns[p]
 		if values[i], err = literalValue(a.Value, col.Type); err != nil {
 			return "", fmt.Errorf("coluna %s: %w", col.Name, err)
 		}
 		positions[i] = p
 	}
 
-	n := 0
-	for _, row := range table.Rows {
-		if where(row) != triTrue {
+	var rids []storage.RID
+	var rows [][]storage.Value
+	for row, err := range db.Scan(s.Table) {
+		if err != nil {
+			return "", err
+		}
+		if where(row.Values) != triTrue {
 			continue
 		}
+		changed := slices.Clone(row.Values)
 		for i, p := range positions {
-			row[p] = values[i]
+			changed[p] = values[i]
 		}
-		n++
+		rids = append(rids, row.RID)
+		rows = append(rows, changed)
 	}
-	if n > 0 {
-		if err := db.ReplaceRows(s.Table, table.Rows); err != nil {
+	if len(rows) > 0 {
+		if err := db.UpdateRows(s.Table, rids, rows); err != nil {
 			return "", err
 		}
 	}
-	return count(n, "linha atualizada", "linhas atualizadas"), nil
+	return count(len(rows), "linha atualizada", "linhas atualizadas"), nil
 }
 
 // deleteRows apaga as linhas que passam no WHERE. Sem WHERE, apaga todas.
 func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
-	table, err := db.ReadTable(s.Table)
+	schema, err := db.TableSchema(s.Table)
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, table.Schema)
+	where, err := compileWhere(s.Where, schema)
 	if err != nil {
 		return "", err
 	}
 
-	kept := slices.DeleteFunc(slices.Clone(table.Rows), func(row []storage.Value) bool {
-		return where(row) == triTrue
-	})
-	n := len(table.Rows) - len(kept)
-	if n > 0 {
-		if err := db.ReplaceRows(s.Table, kept); err != nil {
+	var rids []storage.RID
+	for row, err := range db.Scan(s.Table) {
+		if err != nil {
+			return "", err
+		}
+		if where(row.Values) == triTrue {
+			rids = append(rids, row.RID)
+		}
+	}
+	if len(rids) > 0 {
+		if err := db.DeleteRows(s.Table, rids); err != nil {
 			return "", err
 		}
 	}
-	return count(n, "linha removida", "linhas removidas"), nil
+	return count(len(rids), "linha removida", "linhas removidas"), nil
 }
 
 // count escreve "1 linha inserida" ou "3 linhas inseridas".
@@ -250,11 +262,11 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 
 // querySelect lê a tabela, filtra pelo WHERE e escolhe as colunas pedidas.
 func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
-	table, err := db.ReadTable(s.Table)
+	table, err := db.TableSchema(s.Table)
 	if err != nil {
 		return nil, err
 	}
-	where, err := compileWhere(s.Where, table.Schema)
+	where, err := compileWhere(s.Where, table)
 	if err != nil {
 		return nil, err
 	}
@@ -278,13 +290,16 @@ func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
 	for _, i := range indexes {
 		r.Columns = append(r.Columns, table.Columns[i])
 	}
-	for _, row := range table.Rows {
-		if where(row) != triTrue {
+	for row, err := range db.Scan(s.Table) {
+		if err != nil {
+			return nil, err
+		}
+		if where(row.Values) != triTrue {
 			continue
 		}
 		picked := make([]storage.Value, len(indexes))
 		for j, i := range indexes {
-			picked[j] = row[i]
+			picked[j] = row.Values[i]
 		}
 		r.Rows = append(r.Rows, picked)
 	}

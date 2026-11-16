@@ -1,10 +1,10 @@
 package storage
 
 import (
-	"fmt"
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Além do catálogo, o banco tem tabelas do sistema que não existem em disco:
@@ -14,6 +14,7 @@ import (
 const (
 	settingsName = "_settings"
 	tablesName   = "_tables"
+	indexesName  = "_indexes"
 )
 
 // settingsSchema tem um parâmetro do banco por linha. O valor é TEXT porque
@@ -33,6 +34,38 @@ var tablesSchema = Schema{Columns: []Column{
 	{Name: "bytes", Type: "INT"},
 }}
 
+// indexesSchema tem uma linha por índice, com o tamanho e a altura da
+// árvore.
+var indexesSchema = Schema{Columns: []Column{
+	{Name: "name", Type: "TEXT"},
+	{Name: "table_name", Type: "TEXT"},
+	{Name: "type", Type: "TEXT"},
+	{Name: "columns", Type: "TEXT"},
+	{Name: "pages", Type: "INT"},
+	{Name: "height", Type: "INT"},
+}}
+
+// isVirtual diz se a tabela do sistema é montada na memória, sem arquivo.
+func isVirtual(name string) bool {
+	return name == settingsName || name == tablesName || name == indexesName
+}
+
+// systemRows monta as linhas de uma tabela do sistema que não existe em
+// disco. ok é false para as outras tabelas.
+func (db *DB) systemRows(name string) (rows [][]Value, ok bool, err error) {
+	switch name {
+	case settingsName:
+		return db.settingsRows(), true, nil
+	case tablesName:
+		rows, err := db.tablesRows()
+		return rows, true, err
+	case indexesName:
+		rows, err := db.indexesRows()
+		return rows, true, err
+	}
+	return nil, false, nil
+}
+
 func (db *DB) settingsRows() [][]Value {
 	return [][]Value{
 		{Text("data_dir"), Text(db.dir), Text("pasta dos arquivos das tabelas")},
@@ -44,25 +77,50 @@ func (db *DB) settingsRows() [][]Value {
 // tablesRows conta, para cada tabela em disco, as linhas e as páginas de
 // dados (sem a página 0). bytes é o tamanho do arquivo.
 func (db *DB) tablesRows() ([][]Value, error) {
+	t := db.begin()
+	defer t.close()
 	var rows [][]Value
 	for _, name := range slices.Sorted(maps.Keys(db.tables)) {
-		if name == settingsName || name == tablesName {
+		if isVirtual(name) {
 			continue
 		}
-		pages, err := readPages(db.tablePath(name), db.pageSize)
-		if err != nil {
-			return nil, fmt.Errorf("tabela %q: %w", name, err)
-		}
 		count := 0
-		for i, page := range pages {
-			records, err := pageRecords(page)
-			if err != nil {
-				return nil, fmt.Errorf("tabela %q corrompida, página %d: %w", name, i+1, err)
-			}
-			count += len(records)
+		err := t.scanRecords(name, func(RID, []byte) (bool, error) {
+			count++
+			return true, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		size := (len(pages) + 1) * db.pageSize
-		rows = append(rows, []Value{Text(name), Text(strconv.Itoa(count)), Text(strconv.Itoa(len(pages))), Text(strconv.Itoa(size))})
+		pages, _ := t.pageCount(name)
+		rows = append(rows, []Value{Text(name), itoa(count), itoa(pages - 1), itoa(pages * db.pageSize)})
 	}
 	return rows, nil
+}
+
+// indexesRows lista os índices de todas as tabelas, com as páginas (sem a 0)
+// e a altura da B+tree.
+func (db *DB) indexesRows() ([][]Value, error) {
+	t := db.begin()
+	defer t.close()
+	var rows [][]Value
+	for _, table := range slices.Sorted(maps.Keys(db.tables)) {
+		for _, idx := range db.tables[table].Indexes {
+			pages, err := t.pageCount(idx.Name)
+			if err != nil {
+				return nil, err
+			}
+			height, err := t.btreeHeight(idx.Name)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, []Value{Text(idx.Name), Text(table), Text(string(idx.Kind)),
+				Text(strings.Join(idx.Columns, ",")), itoa(pages - 1), itoa(height)})
+		}
+	}
+	return rows, nil
+}
+
+func itoa(n int) Value {
+	return Text(strconv.Itoa(n))
 }

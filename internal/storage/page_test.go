@@ -105,17 +105,17 @@ func TestDecodeRecordErrors(t *testing.T) {
 }
 
 func TestPageFill(t *testing.T) {
-	page := newPage(testPageSize)
+	page := newPage(testPageSize, pageHeap)
 	var added [][]byte
 	for i := 0; ; i++ {
 		rec := bytes.Repeat([]byte{byte(i)}, 10)
-		if !addRecord(page, rec) {
+		if _, ok := addRecord(page, rec); !ok {
 			break
 		}
 		added = append(added, rec)
 	}
 
-	// Cada registro gasta 10 bytes + 4 do slot: (1024 - 4) / 14 = 72.
+	// Cada registro gasta 10 bytes + 4 do slot: (1024 - 10) / 14 = 72.
 	if len(added) != 72 {
 		t.Errorf("couberam %d registros, want 72", len(added))
 	}
@@ -128,13 +128,82 @@ func TestPageFill(t *testing.T) {
 	}
 }
 
-func TestPageRecordsErrors(t *testing.T) {
-	tooManySlots := newPage(testPageSize)
-	tooManySlots[0], tooManySlots[1] = 0xff, 0x00 // 255 slots, mas nenhum registro
+// TestPageSlotsAreStable confere o que dá estabilidade ao RID: apagar,
+// encolher, crescer e compactar nunca mudam o número do slot de uma linha.
+func TestPageSlotsAreStable(t *testing.T) {
+	page := newPage(testPageSize, pageHeap)
+	want := map[int][]byte{}
+	for i := range 40 {
+		rec := bytes.Repeat([]byte{byte('a' + i%26)}, 20)
+		slot, ok := addRecord(page, rec)
+		if !ok || slot != i {
+			t.Fatalf("addRecord = %d, %v; want %d, true", slot, ok, i)
+		}
+		want[i] = rec
+	}
 
-	outside := newPage(testPageSize)
+	// Apaga os pares: viram slots mortos (nil) e buracos.
+	for i := 0; i < 40; i += 2 {
+		deleteRecord(page, i)
+		delete(want, i)
+	}
+	// Encolhe o 1 e cresce o 3 além do espaço contínuo: só cabe compactando.
+	want[1] = []byte("curto")
+	if !updateRecord(page, 1, want[1]) {
+		t.Fatal("updateRecord para menor falhou")
+	}
+	want[3] = bytes.Repeat([]byte{'z'}, 300)
+	if !updateRecord(page, 3, want[3]) {
+		t.Fatal("updateRecord para maior falhou, mesmo com espaço nos buracos")
+	}
+	// Um registro novo reaproveita o primeiro slot morto.
+	if slot, ok := addRecord(page, []byte("novo")); !ok || slot != 0 {
+		t.Fatalf("addRecord = %d, %v; want 0 (slot morto), true", slot, ok)
+	}
+	want[0] = []byte("novo")
+
+	records, err := pageRecords(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, rec := range records {
+		if !bytes.Equal(rec, want[i]) {
+			t.Errorf("slot %d = %q, want %q", i, rec, want[i])
+		}
+	}
+
+	// Maior que todo o espaço livre: não cabe e a página não muda.
+	before := bytes.Clone(page)
+	if updateRecord(page, 5, make([]byte, testPageSize)) {
+		t.Error("updateRecord aceitou um registro maior que a página")
+	}
+	if !bytes.Equal(page, before) {
+		t.Error("updateRecord que falhou mexeu na página")
+	}
+}
+
+func TestBuildPage(t *testing.T) {
+	records := [][]byte{[]byte("a"), []byte("bb"), []byte("ccc")}
+	page, ok := buildPage(testPageSize, pageLeaf, 7, records)
+	if !ok {
+		t.Fatal("buildPage não coube")
+	}
+	got, _ := pageRecords(page)
+	if pageKind(page) != pageLeaf || pageLink(page) != 7 || !reflect.DeepEqual(got, records) {
+		t.Errorf("página = tipo %d, link %d, %q", pageKind(page), pageLink(page), got)
+	}
+	if _, ok := buildPage(testPageSize, pageLeaf, 0, [][]byte{make([]byte, testPageSize)}); ok {
+		t.Error("buildPage aceitou registros maiores que a página")
+	}
+}
+
+func TestPageRecordsErrors(t *testing.T) {
+	tooManySlots := newPage(testPageSize, pageHeap)
+	tooManySlots[2], tooManySlots[3] = 0xff, 0x00 // 255 slots, mas nenhum registro
+
+	outside := newPage(testPageSize, pageHeap)
 	addRecord(outside, []byte("abc"))
-	outside[6], outside[7] = 0xff, 0x00 // tamanho do slot 0 passa do fim da página
+	outside[pageHeaderSize+2], outside[pageHeaderSize+3] = 0xff, 0x00 // tamanho do slot 0 passa do fim da página
 
 	for name, page := range map[string][]byte{"slots demais": tooManySlots, "slot para fora": outside} {
 		if _, err := pageRecords(page); err == nil {
@@ -143,18 +212,17 @@ func TestPageRecordsErrors(t *testing.T) {
 	}
 }
 
-func TestWritePagesLeavesNoTemp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "t.mari")
-	if err := writePages(path, testPageSize, [][]byte{newPage(testPageSize)}); err != nil {
+func TestCreateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.mari")
+	if err := createFile(path, testPageSize, newPage(testPageSize, pageHeap)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("o arquivo temporário ficou para trás: %v", err)
+	data, _ := os.ReadFile(path)
+	if size, err := readHeader(data); err != nil || size != testPageSize || len(data) != 2*testPageSize {
+		t.Errorf("arquivo com %d bytes, readHeader = %d, %v", len(data), size, err)
 	}
-	pages, err := readPages(path, testPageSize)
-	if err != nil || len(pages) != 1 {
-		t.Errorf("readPages = %d páginas, %v; want 1 página", len(pages), err)
+	if err := createFile(path, testPageSize); err == nil {
+		t.Error("createFile sobrescreveu um arquivo que já existia")
 	}
 }
 
@@ -198,11 +266,11 @@ func FuzzDecodeRecord(f *testing.F) {
 // que os registros devolvidos ficam dentro da página.
 // Rode com: go test ./internal/storage -fuzz FuzzPageRecords
 func FuzzPageRecords(f *testing.F) {
-	page := newPage(minPageSize)
+	page := newPage(minPageSize, pageHeap)
 	addRecord(page, []byte("abc"))
 	addRecord(page, []byte("de"))
 	f.Add(page)
-	f.Add(newPage(minPageSize))
+	f.Add(newPage(minPageSize, pageLeaf))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// O pager sempre entrega páginas do tamanho certo.
