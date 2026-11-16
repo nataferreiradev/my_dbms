@@ -59,6 +59,17 @@ Elisa | Recife |    19
 (3 linhas)
 ```
 
+## Como servidor
+
+```
+go run ./cmd/my_dbms -listen localhost:4321
+```
+
+Atende vários clientes ao mesmo tempo por TCP: um comando por linha, e uma
+linha de JSON de resposta para cada um. Dá para testar com
+`nc localhost 4321`. O protocolo e como a concorrência funciona estão em
+[docs/estrutura.md](docs/estrutura.md#servidor).
+
 ## Mais exemplos
 
 ```sql

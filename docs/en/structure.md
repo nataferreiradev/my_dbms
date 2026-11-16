@@ -8,13 +8,15 @@ bottom.
 
 ```
 my_dbms/
-├── cmd/my_dbms/          → executable (REPL)
-│   ├── main.go           → reads lines from stdin and prints the result
+├── cmd/my_dbms/          → executable (REPL or TCP server)
+│   ├── main.go           → reads lines from stdin and prints the result; with -listen, starts the server
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): WHERE condition → function that tests a row
 │   ├── format.go         → renders the SELECT result as a table
-│   └── format_test.go
+│   ├── format_test.go
+│   ├── server.go         → TCP server: one goroutine per connection and a read/write lock
+│   └── server_test.go
 ├── internal/
 │   ├── config/           → database parameters
 │   │   ├── config.go     → Config, Default(), Load(): reads my_dbms.conf
@@ -79,6 +81,39 @@ DROP TABLE p;
   as in standard SQL; use `IS NULL`.
 - A multi-row `INSERT` writes all rows or none.
 
+## Server
+
+With `-listen`, the executable doesn't open the REPL: it serves clients over
+TCP.
+
+```
+go run ./cmd/my_dbms -listen localhost:4321
+```
+
+The protocol is plain text, so you can try it with `nc localhost 4321`: the
+client sends one command per line and gets one line of JSON back for each.
+
+```
+→ SELECT nome FROM p WHERE id = 1;
+← {"output":"nome\n----\nAna\n(1 linha)"}
+→ DROP TABLE nada;
+← {"error":"tabela \"nada\" não existe"}
+```
+
+An empty line gets `{}`, and `exit` or `quit` close the connection.
+
+Each connection runs in its own goroutine, and all of them share the same
+`storage.DB`. A `sync.RWMutex` in `server` guards access: many `SELECT`s run
+together, but a command that writes runs alone. The lock is per command, not
+per storage call, because `INSERT`, `UPDATE` and `DELETE` read the table and
+write the new version back: two of them at once would start from the same
+version, and one would erase what the other did. Once storage writes only the
+pages that changed and has transactions, this single lock can become
+per-table locks.
+
+The server and the REPL shouldn't open the same `data_dir` at the same time:
+they are two processes, and the lock only works inside one.
+
 ## How a command flows
 
 ```
@@ -111,7 +146,7 @@ DROP TABLE p;
 | `internal/parser` | Checks the grammar and turns tokens into an AST (`Statement`). Syntax errors come from here, with the position. | Know whether the table or column exists. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
 | `internal/storage` | Defines the on-disk format, maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
-| `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, calls storage and formats the output. | Implement file-format or grammar rules. |
+| `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, calls storage and formats the output. Also serves clients over TCP (`server.go`). | Implement file-format or grammar rules. |
 
 `internal/` prevents code outside the module from importing these packages,
 which leaves us free to change the internal API.

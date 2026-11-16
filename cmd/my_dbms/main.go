@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
+	"log"
+	"net"
 	"os"
 	"strings"
 
@@ -16,6 +19,9 @@ const (
 )
 
 func main() {
+	listen := flag.String("listen", "", "em vez do REPL, atende clientes por TCP neste endereço (ex.: localhost:4321)")
+	flag.Parse()
+
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao ler configuração:", err)
@@ -26,6 +32,21 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao abrir banco:", err)
 		os.Exit(1)
+	}
+
+	if *listen != "" {
+		ln, err := net.Listen("tcp", *listen)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "erro ao abrir a porta:", err)
+			os.Exit(1)
+		}
+		log.Printf("my_dbms ouvindo em %s (dados em %s)", ln.Addr(), cfg.DataDir)
+		s := &server{db: db}
+		if err := s.serve(ln); err != nil {
+			fmt.Fprintln(os.Stderr, "erro no servidor:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)

@@ -7,13 +7,15 @@ O objetivo é ter código pequeno e direto, que dê para ler de cima a baixo.
 
 ```
 my_dbms/
-├── cmd/my_dbms/          → executável (REPL)
-│   ├── main.go           → lê linhas do stdin e imprime o resultado
+├── cmd/my_dbms/          → executável (REPL ou servidor TCP)
+│   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen, sobe o servidor
 │   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha
 │   ├── format.go         → desenha o resultado do SELECT como tabela
-│   └── format_test.go
+│   ├── format_test.go
+│   ├── server.go         → servidor TCP: uma goroutine por conexão e trava de leitura/escrita
+│   └── server_test.go
 ├── internal/
 │   ├── config/           → parâmetros do banco
 │   │   ├── config.go     → Config, Default(), Load(): lê o my_dbms.conf
@@ -78,6 +80,37 @@ DROP TABLE p;
   no SQL padrão; use `IS NULL`.
 - `INSERT` com várias linhas grava todas ou nenhuma.
 
+## Servidor
+
+Com `-listen`, o executável não abre o REPL: atende clientes por TCP.
+
+```
+go run ./cmd/my_dbms -listen localhost:4321
+```
+
+O protocolo é de texto, para dar para testar com `nc localhost 4321`: o
+cliente manda um comando por linha e recebe uma linha de JSON para cada um.
+
+```
+→ SELECT nome FROM p WHERE id = 1;
+← {"output":"nome\n----\nAna\n(1 linha)"}
+→ DROP TABLE nada;
+← {"error":"tabela \"nada\" não existe"}
+```
+
+Linha vazia recebe `{}`, e `exit` ou `quit` fecham a conexão.
+
+Cada conexão roda na sua goroutine, e todas usam o mesmo `storage.DB`. Um
+`sync.RWMutex` no `server` controla o acesso: vários `SELECT` rodam juntos,
+mas um comando que escreve roda sozinho. A trava é por comando, e não por
+chamada ao storage, porque `INSERT`, `UPDATE` e `DELETE` leem a tabela e
+gravam a versão nova: dois deles ao mesmo tempo partiriam da mesma versão, e
+um apagaria o que o outro fez. Quando o storage gravar só as páginas que
+mudaram e tiver transações, essa trava única pode virar travas por tabela.
+
+O servidor e o REPL não devem abrir a mesma `data_dir` ao mesmo tempo: são
+dois processos, e a trava só vale dentro de um.
+
 ## Fluxo de um comando
 
 ```
@@ -110,7 +143,7 @@ DROP TABLE p;
 | `internal/sql` | Transforma texto em tokens classificados. Normaliza keywords para maiúsculo e tira as aspas das strings. | Não sabe que existe disco nem tabela. |
 | `internal/parser` | Confere a gramática e transforma os tokens em uma AST (`Statement`). Erros de sintaxe saem daqui, com a posição. | Não sabe se a tabela ou a coluna existe. |
 | `internal/storage` | Define o formato em disco, mantém o catálogo, cria tabelas, acrescenta registros e lê tabelas dentro de um diretório. | Não conhece SQL. Recebe nomes e valores já validados. |
-| `cmd/my_dbms` | Liga tudo: recebe a linha, chama `Lex` e `Parse`, roda o `Statement` contra o schema, chama o storage e formata a saída. | Não implementa regra de formato de arquivo nem de gramática. |
+| `cmd/my_dbms` | Liga tudo: recebe a linha, chama `Lex` e `Parse`, roda o `Statement` contra o schema, chama o storage e formata a saída. Também atende clientes por TCP (`server.go`). | Não implementa regra de formato de arquivo nem de gramática. |
 
 `internal/` impede que código de fora do módulo importe esses pacotes, o que
 nos deixa livres para mudar a API interna.

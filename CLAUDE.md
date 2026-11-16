@@ -8,6 +8,7 @@ projeto open source de estudo. A pessoa que mantém o projeto quer código
 
 ```
 go run ./cmd/my_dbms     # abre o REPL (tabelas ficam no data_dir do my_dbms.conf)
+go run ./cmd/my_dbms -listen localhost:4321   # servidor TCP (protocolo em docs/estrutura.md)
 go test ./...            # todos os testes
 go vet ./...
 gofmt -l .               # deve sair vazio
