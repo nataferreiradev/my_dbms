@@ -83,6 +83,18 @@ func TestServer(t *testing.T) {
 		}
 	}
 
+	// SELECT traz as colunas e as linhas, com NULL como null.
+	c.send("INSERT INTO p VALUES (3, NULL);")
+	resp, err := c.send("SELECT * FROM p WHERE id > 1;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(map[string]any{"columns": resp.Columns, "rows": resp.Rows})
+	want := `{"columns":[{"name":"id","type":"INT"},{"name":"nome","type":"TEXT"}],"rows":[["2","Bia"],["3",null]]}`
+	if string(got) != want {
+		t.Errorf("SELECT:\n got %s\nwant %s", got, want)
+	}
+
 	// exit fecha a conexão.
 	fmt.Fprintln(c.conn, "exit")
 	if _, err := c.r.ReadByte(); err == nil {

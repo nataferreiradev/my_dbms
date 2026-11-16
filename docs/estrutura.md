@@ -98,6 +98,15 @@ cliente manda um comando por linha e recebe uma linha de JSON para cada um.
 ← {"error":"tabela \"nada\" não existe"}
 ```
 
+Um `SELECT` também traz `columns` e `rows`, para o cliente montar a tabela do
+jeito dele (a interface web desenha em HTML). Os valores vêm como texto e
+`NULL` vem como `null`:
+
+```
+→ SELECT * FROM p WHERE id > 1;
+← {"output":"…","columns":[{"name":"id","type":"INT"},{"name":"nome","type":"TEXT"}],"rows":[["2","Bia"],["3",null]]}
+```
+
 Linha vazia recebe `{}`, e `exit` ou `quit` fecham a conexão.
 
 Cada conexão roda na sua goroutine, e todas usam o mesmo `storage.DB`. Um

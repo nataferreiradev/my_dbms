@@ -233,14 +233,30 @@ func display(v storage.Value) string {
 	return v.Text
 }
 
+// selectResult é o resultado de um SELECT antes de virar texto: o REPL
+// formata como tabela e o servidor manda as colunas e linhas em JSON.
+type selectResult struct {
+	Columns []storage.Column
+	Rows    [][]storage.Value
+}
+
 func selectRows(db *storage.DB, s *parser.Select) (string, error) {
-	table, err := db.ReadTable(s.Table)
+	r, err := querySelect(db, s)
 	if err != nil {
 		return "", err
 	}
+	return r.format(), nil
+}
+
+// querySelect lê a tabela, filtra pelo WHERE e escolhe as colunas pedidas.
+func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
+	table, err := db.ReadTable(s.Table)
+	if err != nil {
+		return nil, err
+	}
 	where, err := compileWhere(s.Where, table.Schema)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// indexes diz quais colunas da tabela entram no resultado, em ordem.
@@ -253,27 +269,42 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	for _, name := range s.Columns {
 		i := table.ColumnIndex(name)
 		if i < 0 {
-			return "", fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
+			return nil, fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
 		}
 		indexes = append(indexes, i)
 	}
 
-	headers := make([]string, len(indexes))
-	right := make([]bool, len(indexes))
-	for j, i := range indexes {
-		headers[j] = table.Columns[i].Name
-		right[j] = table.Columns[i].Type == "INT"
+	r := &selectResult{}
+	for _, i := range indexes {
+		r.Columns = append(r.Columns, table.Columns[i])
 	}
-	var rows [][]string
 	for _, row := range table.Rows {
 		if where(row) != triTrue {
 			continue
 		}
-		cells := make([]string, len(indexes))
+		picked := make([]storage.Value, len(indexes))
 		for j, i := range indexes {
-			cells[j] = display(row[i])
+			picked[j] = row[i]
 		}
-		rows = append(rows, cells)
+		r.Rows = append(r.Rows, picked)
 	}
-	return formatTable(headers, right, rows), nil
+	return r, nil
+}
+
+// format desenha o resultado como o texto que o REPL imprime.
+func (r *selectResult) format() string {
+	headers := make([]string, len(r.Columns))
+	right := make([]bool, len(r.Columns))
+	for i, c := range r.Columns {
+		headers[i] = c.Name
+		right[i] = c.Type == "INT"
+	}
+	rows := make([][]string, len(r.Rows))
+	for i, row := range r.Rows {
+		rows[i] = make([]string, len(row))
+		for j, v := range row {
+			rows[i][j] = display(v)
+		}
+	}
+	return formatTable(headers, right, rows)
 }

@@ -100,6 +100,15 @@ client sends one command per line and gets one line of JSON back for each.
 ← {"error":"tabela \"nada\" não existe"}
 ```
 
+A `SELECT` also returns `columns` and `rows`, so the client can render the
+table its own way (the web UI draws it in HTML). Values come as text and
+`NULL` comes as `null`:
+
+```
+→ SELECT * FROM p WHERE id > 1;
+← {"output":"…","columns":[{"name":"id","type":"INT"},{"name":"nome","type":"TEXT"}],"rows":[["2","Bia"],["3",null]]}
+```
+
 An empty line gets `{}`, and `exit` or `quit` close the connection.
 
 Each connection runs in its own goroutine, and all of them share the same

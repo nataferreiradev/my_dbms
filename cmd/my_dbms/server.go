@@ -20,8 +20,10 @@ const maxLine = 1 << 20
 // todas usam o mesmo banco.
 //
 // O protocolo é de texto: o cliente manda um comando por linha e recebe uma
-// linha de JSON para cada um, {"output": "..."} ou {"error": "..."}.
-// "exit" ou "quit" fecham a conexão. Dá para testar com nc:
+// linha de JSON para cada um, {"output": "..."} ou {"error": "..."}. Um
+// SELECT também traz "columns" e "rows", para o cliente montar a tabela do
+// jeito dele; NULL vem como null. "exit" ou "quit" fecham a conexão. Dá
+// para testar com nc:
 //
 //	nc localhost 4321
 type server struct {
@@ -34,24 +36,59 @@ type server struct {
 }
 
 type response struct {
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Output  string      `json:"output,omitempty"`
+	Error   string      `json:"error,omitempty"`
+	Columns []column    `json:"columns,omitempty"`
+	Rows    [][]*string `json:"rows,omitempty"`
 }
 
-// execute roda um comando com a trava certa para o tipo dele.
-func (s *server) execute(input string) (string, error) {
+type column struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// execute roda um comando com a trava certa para o tipo dele. Um SELECT
+// roda com a trava de leitura e devolve também as colunas e as linhas.
+func (s *server) execute(input string) response {
 	stmt, err := parse(input)
 	if err != nil {
-		return "", err
+		return response{Error: err.Error()}
 	}
-	if _, ok := stmt.(*parser.Select); ok {
+
+	if sel, ok := stmt.(*parser.Select); ok {
 		s.mu.RLock()
-		defer s.mu.RUnlock()
-	} else {
-		s.mu.Lock()
-		defer s.mu.Unlock()
+		r, err := querySelect(s.db, sel)
+		s.mu.RUnlock()
+		if err != nil {
+			return response{Error: err.Error()}
+		}
+		return selectResponse(r)
 	}
-	return run(s.db, stmt)
+
+	s.mu.Lock()
+	out, err := run(s.db, stmt)
+	s.mu.Unlock()
+	if err != nil {
+		return response{Error: err.Error()}
+	}
+	return response{Output: out}
+}
+
+func selectResponse(r *selectResult) response {
+	resp := response{Output: r.format()}
+	for _, c := range r.Columns {
+		resp.Columns = append(resp.Columns, column{Name: c.Name, Type: c.Type})
+	}
+	for _, row := range r.Rows {
+		cells := make([]*string, len(row))
+		for i, v := range row {
+			if !v.Null {
+				cells[i] = &v.Text
+			}
+		}
+		resp.Rows = append(resp.Rows, cells)
+	}
+	return resp
 }
 
 // serve aceita conexões até o listener ser fechado.
@@ -88,12 +125,7 @@ func (s *server) handle(conn net.Conn) {
 		case "exit", "quit":
 			return
 		default:
-			out, err := s.execute(line)
-			if err != nil {
-				resp.Error = err.Error()
-			} else {
-				resp.Output = out
-			}
+			resp = s.execute(line)
 		}
 		if err := enc.Encode(resp); err != nil {
 			log.Printf("%s: erro ao responder: %v", addr, err)
