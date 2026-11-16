@@ -13,15 +13,24 @@ import (
 
 // execute roda um comando SQL e devolve o texto para mostrar ao usuário.
 func execute(db *storage.DB, input string) (string, error) {
+	stmt, err := parse(input)
+	if err != nil {
+		return "", err
+	}
+	return run(db, stmt)
+}
+
+// parse transforma o texto do comando na AST.
+func parse(input string) (parser.Statement, error) {
 	tokens, err := sql.Lex(input)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	stmt, err := parser.Parse(tokens)
-	if err != nil {
-		return "", err
-	}
+	return parser.Parse(tokens)
+}
 
+// run executa um comando já analisado.
+func run(db *storage.DB, stmt parser.Statement) (string, error) {
 	switch s := stmt.(type) {
 	case *parser.CreateTable:
 		return createTable(db, s)
@@ -39,7 +48,7 @@ func execute(db *storage.DB, input string) (string, error) {
 		}
 		return fmt.Sprintf("tabela %s removida", s.Name), nil
 	}
-	return "", fmt.Errorf("comando não suportado: %s", input)
+	return "", fmt.Errorf("comando não suportado: %T", stmt)
 }
 
 func createTable(db *storage.DB, s *parser.CreateTable) (string, error) {
