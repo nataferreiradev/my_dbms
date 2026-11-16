@@ -13,6 +13,7 @@ my_dbms/
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): WHERE condition → function that tests a row
+│   ├── plan.go           → choosePlan(): full scan or index, and the EXPLAIN text
 │   ├── format.go         → renders the SELECT result as a table
 │   ├── format_test.go
 │   ├── server.go         → TCP server: one goroutine per connection and a read/write lock
@@ -31,12 +32,20 @@ my_dbms/
 │   │   ├── parser.go     → Parse(): []Token → Statement
 │   │   └── parser_test.go
 │   └── storage/          → on-disk persistence
-│       ├── storage.go    → DB: catalog, CreateTable, InsertRows, ReadTable,
-│       │                   ReplaceRows, DropTable
+│       ├── storage.go    → DB: catalog, CreateTable, InsertRows, UpdateRows,
+│       │                   DeleteRows, Scan, ReadTable, DropTable
 │       ├── storage_test.go
 │       ├── page.go       → on-disk format: header, slotted pages, records
 │       ├── page_test.go
-│       ├── system.go     → system tables built in memory: _settings, _tables
+│       ├── heap.go       → RID and row operations on a table: insert, read, delete, replace
+│       ├── tx.go         → transaction: changed pages in memory, commit with a rollback journal
+│       ├── tx_test.go
+│       ├── btree.go      → B+tree: insert, delete, seek and walk the leaves
+│       ├── btree_test.go
+│       ├── key.go        → encoding of index keys into bytes that sort correctly
+│       ├── index.go      → indexes: maintenance, uniqueness, CreateIndex, DropIndex, IndexScan
+│       ├── index_test.go
+│       ├── system.go     → system tables built in memory: _settings, _tables, _indexes
 │       ├── system_test.go
 │       └── bench_test.go → benchmarks of INSERT with a key and of reading a table
 ├── .github/workflows/
@@ -71,6 +80,9 @@ INSERT INTO p (nome, id) VALUES ('Caio', 3);
 SELECT * FROM p WHERE (id > 1 OR email IS NULL) AND nome <> 'Bia';
 UPDATE p SET email = 'ana@x' WHERE id = 1;
 DELETE FROM p WHERE email IS NULL;
+CREATE INDEX p_nome ON p (nome);
+EXPLAIN SELECT * FROM p WHERE nome = 'Ana';
+DROP INDEX p_nome;
 DROP TABLE p;
 ```
 
@@ -81,7 +93,11 @@ DROP TABLE p;
 - `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` and
   parentheses. Comparing with `NULL` is "unknown" and the row doesn't pass,
   as in standard SQL; use `IS NULL`.
-- A multi-row `INSERT` writes all rows or none.
+- `INSERT`, `UPDATE` and `DELETE` write all rows or none: each command is a
+  transaction.
+- `CREATE INDEX` creates a (non-unique) B+tree index, and `EXPLAIN` shows
+  whether a `SELECT`, `UPDATE` or `DELETE` will use an index or read the
+  whole table. See [Indexes](#indexes).
 
 ## Server
 
@@ -116,11 +132,11 @@ An empty line gets `{}`, and `exit` or `quit` close the connection.
 Each connection runs in its own goroutine, and all of them share the same
 `storage.DB`. A `sync.RWMutex` in `server` guards access: many `SELECT`s run
 together, but a command that writes runs alone. The lock is per command, not
-per storage call, because `INSERT`, `UPDATE` and `DELETE` read the table and
-write the new version back: two of them at once would start from the same
-version, and one would erase what the other did. Once storage writes only the
-pages that changed and has transactions, this single lock can become
-per-table locks.
+per storage call, because `UPDATE` and `DELETE` first read the rows and then
+write: another command in between would change what was read. And storage
+accepts many read transactions at once, but only one write transaction (see
+[Transactions](#transactions-and-the-journal)). Per-table or per-row locks
+can come with MVCC.
 
 The server and the REPL shouldn't open the same `data_dir` at the same time:
 they are two processes, and the lock only works inside one.
@@ -140,10 +156,16 @@ they are two processes, and the lock only works inside one.
   execute()            → checks the Statement type and calls selectRows
         │
         ▼
-  storage.ReadTable()  → schema from the in-memory catalog + rows from data/pessoas.mari
+  compileWhere()       → checks columns and types and builds the function that tests a row
         │
         ▼
-  selectRows()         → picks the requested columns
+  choosePlan()         → full scan (db.Scan) or index (db.IndexScan)
+        │
+        ▼
+  storage              → reads the pages of data/pessoas.mari (and of the index) in a transaction
+        │
+        ▼
+  selectRows()         → applies the WHERE and picks the requested columns
         │
         ▼
   formatTable()        → builds the aligned text the REPL prints
@@ -156,51 +178,80 @@ they are two processes, and the lock only works inside one.
 | `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase and strips quotes from strings. | Know that disks or tables exist. |
 | `internal/parser` | Checks the grammar and turns tokens into an AST (`Statement`). Syntax errors come from here, with the position. | Know whether the table or column exists. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
-| `internal/storage` | Defines the on-disk format, maintains the catalog, creates tables, appends records and reads tables inside a directory. | Know about SQL. It receives names and values that are already validated. |
-| `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, calls storage and formats the output. Also serves clients over TCP (`server.go`). | Implement file-format or grammar rules. |
+| `internal/storage` | Defines the on-disk format, maintains the catalog, stores and reads rows by address (RID), maintains the B+tree indexes and runs every operation in a transaction with a journal. | Know about SQL. It receives names and values that are already validated. |
+| `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, picks the plan (index or scan), calls storage and formats the output. Also serves clients over TCP (`server.go`). | Implement file-format or grammar rules. |
 
 `internal/` prevents code outside the module from importing these packages,
 which leaves us free to change the internal API.
 
 ## On-disk format
 
-Each table is a file at `<data_dir>/<name>.mari` holding only its records.
-What describes the tables lives in the **catalog**,
-`<data_dir>/_catalog.mari`, stored in the same format. The format code is
-in `internal/storage/page.go`.
+Each table is a file at `<data_dir>/<name>.mari` holding only its records,
+and each index is another file, `<data_dir>/<index>.mari`, with the B+tree.
+That's why tables and indexes share names, as in PostgreSQL. What describes
+everything lives in the **catalog**, `<data_dir>/_catalog.mari`, stored in
+the same format. The format code is in `internal/storage/page.go`.
 
 ### Pages
 
 The file is split into **pages** of `page_size` bytes (4096 by default), as
 in SQLite and PostgreSQL: page N starts at byte `N × page_size`. Page 0 is
-the file header, and the others hold the records:
+the file header, and the others hold records:
 
 ```
 page 0   "MRNA" | version (2 bytes) | page_size (2 bytes) | zeros to the end
 
-page N   ┌───────────────────────────────────────────────────────┐
-         │ slot count | start of records | slot 0 | slot 1 …     │  slots grow →
-         │                                                       │
-         │                     free space                        │
-         │                                                       │
-         │                  … | record 1 | record 0              │  ← records grow from the end
-         └───────────────────────────────────────────────────────┘
+page N   ┌──────────────────────────────────────────────────────────────┐
+         │ type | – | slot count | start of records | link | slot 0 …   │  slots grow →
+         │                                                              │
+         │                         free space                           │
+         │                                                              │
+         │                    … | record 1 | record 0                   │  ← records grow from the end
+         └──────────────────────────────────────────────────────────────┘
 ```
+
+The page header is 10 bytes: the **type** (1 byte), a free byte, the slot
+count and the start of records (2 bytes each) and the **link** (4 bytes).
+The type says what the page holds:
+
+| Type | Page | Link |
+|---|---|---|
+| 1 | records of a table (heap) | unused |
+| 2 | B+tree leaf | the next leaf |
+| 3 | B+tree internal node | the rightmost child |
 
 Each slot is 4 bytes: the offset and size of the record inside the page.
 Slots grow from the start and records from the end, and the page is full
-when the two meet. All integers are little endian; the 2-byte fields limit a
-page to 32 KB.
+when the two meet. All header integers are little endian; the 2-byte fields
+limit a page to 32 KB.
 
 `page_size` comes from `my_dbms.conf` and is written to page 0 of every file
 when the database is created. Opening an existing database with a different
 value is an error, because a file of 4 KB pages read as 8 KB pages turns into
 garbage. The header also makes a file in another format (like the CSV of
-older versions) get rejected with an error instead of read wrong.
+older versions, or format version 1, from before indexes) get rejected with
+an error instead of read wrong.
 
-A record must fit in an empty page: the maximum is `page_size − 8` bytes (the
-page header and one slot). A bigger record is rejected with an error, and
-nothing is written.
+A record must fit in an empty page: the maximum is `page_size − 14` bytes
+(the page header and one slot). A bigger record is rejected with an error,
+and nothing is written.
+
+### Row addresses (RID)
+
+Each row has an address, the **RID** (row id): its page and slot, like
+PostgreSQL's `ctid`. It's what an index stores to find the row, so it can't
+change for no reason (`internal/storage/heap.go`):
+
+- `DELETE` doesn't rebuild the page: it only marks the slot **dead** (size
+  0). The record's bytes become a hole.
+- `UPDATE` rewrites the record in the same slot. If the new one is bigger and
+  doesn't fit even after merging the holes, the row moves to another page and
+  gets a new RID (the indexes are updated along with it).
+- When free space is scattered in holes, the page is **compacted**: records
+  are packed at the end, and slots keep their numbers.
+- An `INSERT` reuses a dead slot in the page, if there is one. It only tries
+  the table's last page; free space in earlier pages is used by `UPDATE`s. A
+  free space map is left for later.
 
 ### Records
 
@@ -229,7 +280,7 @@ TEXT)`:
 
 In memory, each cell is still a `storage.Value`: a text or `NULL`, with
 numbers already normalized as text. The conversion to int64 only happens when
-writing.
+writing (and when building an index key).
 
 ### Catalog
 
@@ -241,6 +292,7 @@ type        | name              | table_name | definition
 table       | pessoas           | pessoas    | id INT NOT NULL,email TEXT,nome TEXT
 primary_key | pessoas_pkey      | pessoas    | id
 unique      | pessoas_email_key | pessoas    | email
+index       | pessoas_nome      | pessoas    | nome
 ```
 
 | `type` | `definition` |
@@ -248,11 +300,13 @@ unique      | pessoas_email_key | pessoas    | email
 | `table` | Columns and types, with `NOT NULL` when present: `id INT NOT NULL,nome TEXT`. |
 | `primary_key` | Primary key columns: `id` or `a,b`. At most one per table. |
 | `unique` | Columns of a unique key. |
+| `index` | Columns of an index created with `CREATE INDEX`. |
 
 The `type` column is the discriminator: it says what kind of object the line
-describes. A new object (index, foreign key) is a new `type` value and a
-`case` in `loadCatalog`. A key always comes after its table's line, and its
-name is generated: `<table>_pkey` or `<table>_<columns>_key`.
+describes. A new object (foreign key, view) is a new `type` value and a
+`case` in `loadCatalog`. A key or index always comes after its table's line.
+Key names are generated: `<table>_pkey` or `<table>_<columns>_key`. Every key
+has an index with the same name, in the file `<name>.mari`.
 
 In SQL, a key goes after the column type, or as its own list item for
 multi-column keys:
@@ -262,9 +316,9 @@ CREATE TABLE pessoas (id INT PRIMARY KEY, email TEXT UNIQUE, nome TEXT NOT NULL)
 CREATE TABLE pares (a INT, b INT, PRIMARY KEY (a, b));
 ```
 
-There is no index yet: `InsertRows` checks each key by reading the whole table
-and rejects the record if another one already has the same values in the
-key's columns. As in standard SQL, primary key columns become `NOT NULL`, and
+The key's index is what enforces it: before writing a row, storage looks the
+key's values up in the B+tree and rejects the row if another one already has
+them. As in standard SQL, primary key columns become `NOT NULL`, and
 `NULL` equals nothing, so a `UNIQUE` key accepts several rows with `NULL`.
 
 `Open` loads the whole catalog into memory, and operations read that copy.
@@ -275,10 +329,10 @@ into it.
 
 ### System tables
 
-Besides `_catalog`, two system tables don't exist on disk: `ReadTable` builds
+Besides `_catalog`, three system tables don't exist on disk: storage builds
 their rows on the spot from the database state (like PostgreSQL's
-`pg_settings` and `pg_tables` views). They accept `SELECT` and `WHERE`, but
-can't be changed.
+`pg_settings`, `pg_tables` and `pg_indexes` views). They accept `SELECT` and
+`WHERE`, but can't be changed.
 
 ```
 my_dbms> SELECT * FROM _settings;
@@ -286,51 +340,157 @@ name           | value | description
 ---------------+-------+-------------------------------------------------------------------
 data_dir       | data  | pasta dos arquivos das tabelas
 page_size      | 4096  | tamanho das páginas em bytes, gravado no banco quando ele é criado
-format_version | 1     | versão do formato dos arquivos .mari
+format_version | 2     | versão do formato dos arquivos .mari
 
 my_dbms> SELECT * FROM _tables;
 name     | rows | pages | bytes
 ---------+------+-------+------
-_catalog |    2 |     1 |  8192
-pessoas  |    2 |     1 |  8192
+_catalog |    3 |     1 |  8192
+p        |    3 |     1 |  8192
+
+my_dbms> SELECT * FROM _indexes;
+name    | table_name | type        | columns | pages | height
+--------+------------+-------------+---------+-------+-------
+p_pkey  | p          | primary_key | id      |     1 |      1
+p_idade | p          | index       | idade   |     1 |      1
 ```
 
 - `_settings`: the parameters the database is running with. `my_dbms.conf`
   still exists, because `data_dir` is needed to find the database before
   opening it.
-- `_tables`: one row per `.mari` file, with the row count, the data pages
+- `_tables`: one row per table on disk, with the row count, the data pages
   (not counting page 0) and the file size in bytes.
+- `_indexes`: one row per index, with its pages and the B+tree **height** (1
+  while the root is still the only leaf).
 
 To add another system table: its name and schema in `system.go`, the schema
-in the `tables` map in `Open` and a `case` in `ReadTable`.
+in the `tables` map in `Open`, the name in `isVirtual` and a `case` in
+`systemRows`.
 
-### Writing
+### Transactions and the journal
 
-`CREATE TABLE` creates the data file first (with only page 0) and then
-writes to the catalog. If the program dies in between, at worst a file is
-left that the catalog doesn't see. It is never deleted or overwritten:
-creating a table with that name fails until someone removes the file.
+Every storage operation runs in a **transaction** (`internal/storage/tx.go`).
+The transaction opens the files it needs, reads pages by number (`ReadAt` at
+byte `N × page_size`) and keeps the pages it changed in memory, without
+touching the disk. At the end:
 
-Every write builds the pages in memory and writes the whole file to
-`<name>.mari.tmp`, which is then renamed over the original: if the program
-dies midway, the original stays whole. The `.tmp` is `fsync`ed before the
-rename, and the directory after it (except on Windows): without that, a power
-loss can leave the new file empty. `INSERT` reads the pages, fills the
-last one and opens new pages when it runs out. `UPDATE` and `DELETE` read the
-table, change it in memory and call `ReplaceRows`, which builds the pages
-from scratch. `DROP TABLE` rewrites the catalog the same way, without the
-rows for the table and its keys, then deletes the data file.
+- **It failed** (a duplicate key on the seventh row of an `INSERT`, a record
+  too big): the transaction just closes the files. Nothing was written, so
+  there is nothing to undo.
+- **It worked**: the commit writes the pages with a **rollback journal**, like
+  SQLite:
+  1. copy the original version of every page about to change to the file
+     `<data_dir>/_journal`, with each file's original size and a CRC32 at the
+     end, and `fsync` it;
+  2. write the new pages to the files (table, indexes, catalog) and `fsync`
+     each one;
+  3. delete `_journal`. That's the moment of commit.
 
-Rewriting the whole file is simple and safe, but gets expensive for large
-tables. The next step is writing only the page that changed, together with a
-journal that protects against crashes in the middle of a write.
+If the program dies in step 2, the files hold part of the new pages. The next
+`Open` finds `_journal`, puts the original pages back and truncates the files
+to their original size. If it dies in step 1, the CRC32 doesn't match: the
+files haven't been touched yet, and the incomplete `_journal` is just
+deleted. Since one transaction covers every file a command touches, a row and
+its index entries always change together.
+
+Files stay open only during the transaction. Many read transactions can run
+at once, but only one write transaction, because each one keeps its own
+changed pages; the caller guarantees that (the REPL runs one command at a
+time, and the server uses a lock).
+
+`CREATE TABLE` and `CREATE INDEX` first create the new files (with `fsync`)
+and then write to the catalog, in a transaction. If the program dies in
+between, at worst a file is left that the catalog doesn't see. It is never
+deleted or overwritten: creating an object with that name fails until
+someone removes the file. `DROP TABLE` and `DROP INDEX` do the opposite: they
+remove the catalog rows in a transaction and then delete the files.
+
+## Indexes
+
+Each index is a **B+tree** in its own file (`internal/storage/btree.go`),
+with pages in the same slotted format as tables:
+
+```
+                  page 1: root (internal node)
+          ┌─────────────────────────────────────────────┐
+          │ (k1, page 2) | (k2, page 3) | link = page 4 │
+          └─────────────────────────────────────────────┘
+               /                |                \
+          < k1 /      >= k1 and < k2 |                \ >= k2
+  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+  │ leaf page 2 │ ───→ │ leaf page 3 │ ───→ │ leaf page 4 │ ───→ end
+  └─────────────┘      └─────────────┘      └─────────────┘
+```
+
+- **Leaves**: the index entries in order, one per slot. Each entry is the
+  encoded key followed by the row's RID (6 bytes). The link points to the
+  next leaf, so walking a range means walking the leaves.
+- **Internal nodes**: records `key | child page`. Each record's child holds
+  the entries smaller than its key; the link points to the child with the
+  entries greater than or equal to the last key.
+- The **root is always page 1**. When it fills up, its content moves down to
+  two new pages and it becomes an internal node with a single key. So the
+  tree grows at the root, and nobody needs to store where the root is.
+- When a page fills up, it splits in the middle (counting bytes) and the key
+  separating the halves goes up to the parent.
+- Deleting never merges pages: a leaf may even become empty. PostgreSQL
+  doesn't merge on a regular `DELETE` either.
+- An entry can be at most a quarter of a page (a bit under 250 bytes with 1
+  KB pages, almost 1 KB with 4 KB pages), so that splitting a full page
+  always gives two halves that fit. A bigger value in an indexed column is
+  rejected with an error.
+
+Since the RID goes at the end, every entry is unique, even in an index that
+allows repeated values, and deleting a row's entry finds exactly it.
+
+### Key encoding
+
+The B+tree compares entries with `bytes.Compare`, without knowing the column
+types. For that, keys are encoded so that byte order is value order
+(`internal/storage/key.go`):
+
+| Value | Bytes |
+|---|---|
+| `NULL` | `00` (sorts before everything) |
+| `INT` | `01` + 8 bytes big endian with the sign bit flipped |
+| `TEXT` | `01` + the text bytes, with each `00` becoming `00 FF`, + `00 01` |
+
+Flipping the sign bit puts negatives before positives. The text terminator
+`00 01` is smaller than any continuation, so `'a'` sorts before `'ab'`, and in
+a multi-column key `('a', 'bc')` isn't confused with `('ab', 'c')`. A length
+prefix, as in records, wouldn't work: `'b'` (length 1) would sort before
+`'aa'` (length 2).
+
+### Choosing the plan
+
+`choosePlan` (`cmd/my_dbms/plan.go`) decides how a `SELECT`, `UPDATE` or
+`DELETE` reads its rows. It only looks at `column op value` comparisons joined
+by `AND` at the top level of the `WHERE` (with `OR`, a row may pass through
+the side the index doesn't cover):
+
+- an index `(a, b, c)` fits when the `WHERE` fixes its first columns with `=`
+  and, optionally, bounds the next column with `<`, `<=`, `>` or `>=`;
+- the index that fixes the most columns wins (a range counts less than an
+  `=`), and ties go to the table's first index, which is the primary key;
+- if none fits, it's a full scan.
+
+The index is only a coarse filter: the whole `WHERE` is still applied to
+every row it returns. Without `ORDER BY`, rows read through an index come out
+in key order, and rows from a scan in file order.
+
+```
+my_dbms> EXPLAIN SELECT * FROM p WHERE idade >= 30 AND idade < 40 AND nome <> 'x';
+busca no índice p_idade da tabela p (idade >= 30 AND idade < 40)
+my_dbms> EXPLAIN SELECT * FROM p WHERE idade = 30 OR id = 1;
+varredura completa na tabela p
+```
 
 ## Adding a command
 
 1. If the command uses a new word, add it to `keywords` in
    `internal/sql/token.go`.
 2. In `internal/parser/ast.go`, create the command's type with the
-   `statement()` method. In `parser.go`, add a `case` in `Parse` and the
+   `statement()` method. In `parser.go`, add a `case` in `statement` and the
    method that reads its grammar, using the helpers `expect`, `accept`,
    `ident`, `literal`, `list` and `names`.
 3. Add a `case` in `cmd/my_dbms/execute.go` that calls the command's own
@@ -360,7 +520,11 @@ journal that protects against crashes in the middle of a write.
 When a responsibility shows up that doesn't fit the ones above. Likely
 candidates as the project grows:
 
-- `internal/engine`: execute the AST, moving that logic out of `cmd/`.
-- `internal/index`: indexes over tables.
+- `internal/engine`: execute the AST and pick the plan, moving that logic
+  out of `cmd/`. It can wait until there's more than one way to join rows
+  (JOIN) or to sort them (ORDER BY).
+- `internal/index`: today the B+tree lives in `internal/storage`, because it
+  uses the same pages and the same transaction as tables. If it grows (other
+  structures, like hash), it can get its own package.
 
 Don't create the package ahead of time: let the code ask for it.
