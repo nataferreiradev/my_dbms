@@ -206,3 +206,29 @@ func TestParseErrors(t *testing.T) {
 		})
 	}
 }
+
+// FuzzParse confere que nenhum comando derruba o parser: ou sai uma AST, ou
+// um erro.
+// Rode com: go test ./internal/parser -fuzz FuzzParse
+func FuzzParse(f *testing.F) {
+	for _, s := range []string{
+		"CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, UNIQUE (nome));",
+		"INSERT INTO p (nome, id) VALUES ('a', 1), ('b', 2);",
+		"SELECT a, b FROM p WHERE (a > 1 OR b IS NULL) AND a <> 3;",
+		"UPDATE p SET a = 1, b = NULL WHERE a = 2",
+		"DELETE FROM p",
+		"DROP TABLE p;",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		tokens, err := sql.Lex(input)
+		if err != nil {
+			return
+		}
+		stmt, err := Parse(tokens)
+		if err == nil && stmt == nil {
+			t.Errorf("Parse(%q) sem erro e sem comando", input)
+		}
+	})
+}
