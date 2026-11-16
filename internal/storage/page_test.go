@@ -2,6 +2,8 @@ package storage
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -138,5 +140,20 @@ func TestPageRecordsErrors(t *testing.T) {
 		if _, err := pageRecords(page); err == nil {
 			t.Errorf("%s: esperava erro", name)
 		}
+	}
+}
+
+func TestWritePagesLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.mari")
+	if err := writePages(path, testPageSize, [][]byte{newPage(testPageSize)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("o arquivo temporário ficou para trás: %v", err)
+	}
+	pages, err := readPages(path, testPageSize)
+	if err != nil || len(pages) != 1 {
+		t.Errorf("readPages = %d páginas, %v; want 1 página", len(pages), err)
 	}
 }

@@ -311,7 +311,9 @@ creating a table with that name fails until someone removes the file.
 
 Every write builds the pages in memory and writes the whole file to
 `<name>.mari.tmp`, which is then renamed over the original: if the program
-dies midway, the original stays whole. `INSERT` reads the pages, fills the
+dies midway, the original stays whole. The `.tmp` is `fsync`ed before the
+rename, and the directory after it (except on Windows): without that, a power
+loss can leave the new file empty. `INSERT` reads the pages, fills the
 last one and opens new pages when it runs out. `UPDATE` and `DELETE` read the
 table, change it in memory and call `ReplaceRows`, which builds the pages
 from scratch. `DROP TABLE` rewrites the catalog the same way, without the

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 )
 
@@ -195,7 +197,10 @@ func readPages(path string, pageSize int) ([][]byte, error) {
 
 // writePages troca o conteúdo de um arquivo .mari pela página 0 e pelas
 // páginas de dados. Grava num arquivo temporário e renomeia por cima do
-// original: se o programa cair no meio, o original continua inteiro.
+// original: se o programa cair no meio, o original continua inteiro. O Sync
+// antes do rename garante que os dados chegaram ao disco antes de o nome
+// apontar para eles; sem ele, uma queda de energia pode deixar o arquivo
+// novo vazio.
 func writePages(path string, pageSize int, pages [][]byte) error {
 	data := make([]byte, pageSize, pageSize*(len(pages)+1))
 	copy(data, fileMagic)
@@ -206,8 +211,44 @@ func writePages(path string, pageSize int, pages [][]byte) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := writeSynced(tmp, data); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// writeSynced grava data em path e só volta depois do fsync.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir faz o fsync do diretório, para que o rename também chegue ao
+// disco. No Windows não dá para abrir um diretório assim, e o NTFS já
+// registra o rename no journal dele.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

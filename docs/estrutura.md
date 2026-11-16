@@ -308,7 +308,9 @@ uma tabela com esse nome dá erro até alguém remover o arquivo.
 
 Toda escrita monta as páginas na memória e grava o arquivo inteiro em
 `<nome>.mari.tmp`, que depois é renomeado por cima do original: se o
-programa cair no meio, o original continua inteiro. O `INSERT` lê as
+programa cair no meio, o original continua inteiro. Antes do rename vem um
+`fsync` do `.tmp`, e depois um `fsync` do diretório (fora do Windows): sem
+isso, uma queda de energia pode deixar o arquivo novo vazio. O `INSERT` lê as
 páginas, enche a última e abre páginas novas quando ela acaba. `UPDATE` e
 `DELETE` leem a tabela, mudam na memória e chamam `ReplaceRows`, que monta as
 páginas do zero. O `DROP TABLE` regrava o catálogo do mesmo jeito, sem as
