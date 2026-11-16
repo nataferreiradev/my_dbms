@@ -79,6 +79,11 @@ func decodeRecord(columns []Column, rec []byte) ([]Value, error) {
 	if len(rec) < pos {
 		return nil, errors.New("registro menor que o bitmap de NULL")
 	}
+	// Os bits que sobram no último byte do bitmap não são de coluna nenhuma:
+	// ligados, o registro está corrompido.
+	if extra := len(columns) % 8; extra != 0 && rec[pos-1]>>extra != 0 {
+		return nil, errors.New("bitmap de NULL com bits além da última coluna")
+	}
 	row := make([]Value, len(columns))
 	for i, c := range columns {
 		if rec[i/8]&(1<<(i%8)) != 0 {
@@ -97,6 +102,11 @@ func decodeRecord(columns []Column, rec []byte) ([]Value, error) {
 			size, n := binary.Uvarint(rec[pos:])
 			if n <= 0 || size > uint64(len(rec)-pos-n) {
 				return nil, fmt.Errorf("coluna %s: TEXT cortado", c.Name)
+			}
+			// O Uvarint aceita bytes a mais (80 00 também é 0); o encodeRecord
+			// nunca grava assim, então é corrupção.
+			if n != len(binary.AppendUvarint(nil, size)) {
+				return nil, fmt.Errorf("coluna %s: tamanho do TEXT mal codificado", c.Name)
 			}
 			pos += n
 			row[i] = Text(string(rec[pos : pos+int(size)]))

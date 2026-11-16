@@ -157,3 +157,65 @@ func TestWritePagesLeavesNoTemp(t *testing.T) {
 		t.Errorf("readPages = %d páginas, %v; want 1 página", len(pages), err)
 	}
 }
+
+// fuzzColumns cobre os dois tipos e mais de 8 colunas, para o bitmap de NULL
+// ter dois bytes.
+var fuzzColumns = []Column{
+	{Name: "a", Type: "INT"}, {Name: "b", Type: "TEXT"}, {Name: "c", Type: "INT"},
+	{Name: "d", Type: "TEXT"}, {Name: "e", Type: "INT"}, {Name: "f", Type: "TEXT"},
+	{Name: "g", Type: "INT"}, {Name: "h", Type: "TEXT"}, {Name: "i", Type: "TEXT"},
+}
+
+// FuzzDecodeRecord confere que bytes quaisquer dão erro, nunca panic, e que
+// um registro que decodifica volta aos mesmos bytes quando gravado de novo.
+// Rode com: go test ./internal/storage -fuzz FuzzDecodeRecord
+func FuzzDecodeRecord(f *testing.F) {
+	row := []Value{Text("1"), Text("Ana"), Null, Text(""), Text("-9"), Null, Text("0"), Text("x"), Text("é")}
+	rec, err := encodeRecord(fuzzColumns, row)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(rec)
+	f.Add([]byte{})
+	f.Add([]byte{0xff, 0xff})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		row, err := decodeRecord(fuzzColumns, data)
+		if err != nil {
+			return
+		}
+		again, err := encodeRecord(fuzzColumns, row)
+		if err != nil {
+			t.Fatalf("decodificou %x, mas não grava de volta: %v", data, err)
+		}
+		if !bytes.Equal(again, data) {
+			t.Errorf("ida e volta diferente: %x → %x", data, again)
+		}
+	})
+}
+
+// FuzzPageRecords confere que uma página corrompida dá erro, nunca panic, e
+// que os registros devolvidos ficam dentro da página.
+// Rode com: go test ./internal/storage -fuzz FuzzPageRecords
+func FuzzPageRecords(f *testing.F) {
+	page := newPage(minPageSize)
+	addRecord(page, []byte("abc"))
+	addRecord(page, []byte("de"))
+	f.Add(page)
+	f.Add(newPage(minPageSize))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// O pager sempre entrega páginas do tamanho certo.
+		page := make([]byte, minPageSize)
+		copy(page, data)
+		records, err := pageRecords(page)
+		if err != nil {
+			return
+		}
+		for i, rec := range records {
+			if len(rec) > len(page) {
+				t.Errorf("registro %d com %d bytes numa página de %d", i, len(rec), len(page))
+			}
+		}
+	})
+}
