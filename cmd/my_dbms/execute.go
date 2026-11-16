@@ -47,6 +47,18 @@ func run(db *storage.DB, stmt parser.Statement) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("tabela %s removida", s.Name), nil
+	case *parser.CreateIndex:
+		if err := db.CreateIndex(s.Name, s.Table, s.Columns); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("índice %s criado", s.Name), nil
+	case *parser.DropIndex:
+		if err := db.DropIndex(s.Name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("índice %s removido", s.Name), nil
+	case *parser.Explain:
+		return explain(db, s)
 	}
 	return "", fmt.Errorf("comando não suportado: %T", stmt)
 }
@@ -152,7 +164,7 @@ func update(db *storage.DB, s *parser.Update) (string, error) {
 
 	var rids []storage.RID
 	var rows [][]storage.Value
-	for row, err := range db.Scan(s.Table) {
+	for row, err := range choosePlan(s.Table, schema, s.Where).rows(db) {
 		if err != nil {
 			return "", err
 		}
@@ -186,7 +198,7 @@ func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
 	}
 
 	var rids []storage.RID
-	for row, err := range db.Scan(s.Table) {
+	for row, err := range choosePlan(s.Table, schema, s.Where).rows(db) {
 		if err != nil {
 			return "", err
 		}
@@ -200,6 +212,31 @@ func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
 		}
 	}
 	return count(len(rids), "linha removida", "linhas removidas"), nil
+}
+
+// explain mostra como um SELECT, UPDATE ou DELETE buscaria as linhas, sem
+// rodar o comando.
+func explain(db *storage.DB, s *parser.Explain) (string, error) {
+	var table string
+	var where parser.Expr
+	switch st := s.Statement.(type) {
+	case *parser.Select:
+		table, where = st.Table, st.Where
+	case *parser.Update:
+		table, where = st.Table, st.Where
+	case *parser.Delete:
+		table, where = st.Table, st.Where
+	default:
+		return "", fmt.Errorf("EXPLAIN não suporta %T", s.Statement)
+	}
+	schema, err := db.TableSchema(table)
+	if err != nil {
+		return "", err
+	}
+	if _, err := compileWhere(where, schema); err != nil {
+		return "", err
+	}
+	return choosePlan(table, schema, where).String(), nil
 }
 
 // count escreve "1 linha inserida" ou "3 linhas inseridas".
@@ -260,7 +297,8 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	return r.format(), nil
 }
 
-// querySelect lê a tabela, filtra pelo WHERE e escolhe as colunas pedidas.
+// querySelect lê as linhas pelo plano escolhido, filtra pelo WHERE e escolhe
+// as colunas pedidas.
 func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
 	table, err := db.TableSchema(s.Table)
 	if err != nil {
@@ -290,7 +328,7 @@ func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
 	for _, i := range indexes {
 		r.Columns = append(r.Columns, table.Columns[i])
 	}
-	for row, err := range db.Scan(s.Table) {
+	for row, err := range choosePlan(s.Table, table, s.Where).rows(db) {
 		if err != nil {
 			return nil, err
 		}

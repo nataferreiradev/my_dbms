@@ -141,6 +141,16 @@ func TestParse(t *testing.T) {
 				Right: &Comparison{Op: "=", Left: ColumnRef{"c"}, Right: Literal{Number, "3"}},
 			}},
 		},
+		{
+			input: "CREATE INDEX t_nome ON t (nome, id);",
+			want:  &CreateIndex{Name: "t_nome", Table: "t", Columns: []string{"nome", "id"}},
+		},
+		{input: "DROP INDEX t_nome", want: &DropIndex{Name: "t_nome"}},
+		{
+			input: "EXPLAIN SELECT * FROM t WHERE id = 1",
+			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "1"}}}},
+		},
+		{input: "explain delete from t", want: &Explain{Statement: &Delete{Table: "t"}}},
 	}
 
 	for _, tt := range tests {
@@ -195,6 +205,12 @@ func TestParseErrors(t *testing.T) {
 		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
 		{input: "DROP t", wantErr: `esperava "TABLE"`},
 		{input: "DROP TABLE t, u", wantErr: "esperava o fim do comando"},
+		{input: "CREATE INDEX i t (a)", wantErr: `esperava "ON"`},
+		{input: "CREATE INDEX i ON t", wantErr: `esperava "("`},
+		{input: "CREATE INDEX ON t (a)", wantErr: "esperava um nome"},
+		{input: "DROP INDEX", wantErr: "esperava um nome"},
+		{input: "EXPLAIN", wantErr: "esperava SELECT, UPDATE ou DELETE"},
+		{input: "EXPLAIN DROP TABLE t", wantErr: "esperava SELECT, UPDATE ou DELETE"},
 	}
 
 	for _, tt := range tests {
@@ -218,6 +234,9 @@ func FuzzParse(f *testing.F) {
 		"UPDATE p SET a = 1, b = NULL WHERE a = 2",
 		"DELETE FROM p",
 		"DROP TABLE p;",
+		"CREATE INDEX i ON p (a, b);",
+		"DROP INDEX i",
+		"EXPLAIN SELECT * FROM p WHERE a >= 1 AND a < 9",
 	} {
 		f.Add(s)
 	}
