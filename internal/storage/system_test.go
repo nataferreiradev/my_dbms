@@ -58,7 +58,7 @@ func TestTables(t *testing.T) {
 
 	// bytes tem que bater com o tamanho real do arquivo.
 	for _, row := range table.Rows {
-		info, err := os.Stat(filepath.Join(dir, row[0].Text+".marina"))
+		info, err := os.Stat(filepath.Join(dir, row[0].Text+".mari"))
 		if err != nil {
 			t.Fatal(err)
 		}

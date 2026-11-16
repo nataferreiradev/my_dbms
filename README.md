@@ -130,10 +130,10 @@ texto ──► sql.Lex() ──► parser.Parse() ──► execute() ──►
 3. **Execução** (`cmd/my_dbms`): confere colunas e tipos contra o schema antes
    de ler qualquer linha e avalia o `WHERE` com a lógica de três valores.
 4. **Storage** (`internal/storage`): guarda cada tabela em
-   `data/<tabela>.marina`, num formato binário próprio dividido em páginas
+   `data/<tabela>.mari`, num formato binário próprio dividido em páginas
    de tamanho fixo (slotted pages, como no SQLite e no PostgreSQL). INT é
    gravado como int64, TEXT com o tamanho na frente e NULL num bitmap. O
-   catálogo `data/_catalog.marina` descreve colunas e chaves, no mesmo
+   catálogo `data/_catalog.mari` descreve colunas e chaves, no mesmo
    formato. Toda escrita grava num arquivo temporário e renomeia por cima do
    original, para a tabela não corromper se o processo cair no meio.
 

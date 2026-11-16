@@ -8,7 +8,7 @@ import (
 	"strconv"
 )
 
-// Um arquivo .marina é uma sequência de páginas de pageSize bytes. A página 0
+// Um arquivo .mari é uma sequência de páginas de pageSize bytes. A página 0
 // é o cabeçalho do arquivo, e as outras guardam os registros:
 //
 //	página 0:  "MRNA" | versão (uint16) | page_size (uint16) | zeros
@@ -168,7 +168,7 @@ func readHeader(data []byte) (int, error) {
 	return int(binary.LittleEndian.Uint16(data[6:])), nil
 }
 
-// readPages lê um arquivo .marina e devolve as páginas de dados, sem a
+// readPages lê um arquivo .mari e devolve as páginas de dados, sem a
 // página 0.
 func readPages(path string, pageSize int) ([][]byte, error) {
 	data, err := os.ReadFile(path)
@@ -193,7 +193,7 @@ func readPages(path string, pageSize int) ([][]byte, error) {
 	return pages, nil
 }
 
-// writePages troca o conteúdo de um arquivo .marina pela página 0 e pelas
+// writePages troca o conteúdo de um arquivo .mari pela página 0 e pelas
 // páginas de dados. Grava num arquivo temporário e renomeia por cima do
 // original: se o programa cair no meio, o original continua inteiro.
 func writePages(path string, pageSize int, pages [][]byte) error {

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	tableExtension = ".marina"
+	tableExtension = ".mari"
 	catalogName    = "_catalog"
 	kindTable      = "table"
 )
@@ -27,7 +27,7 @@ var catalogSchema = Schema{Columns: []Column{
 
 // DB guarda cada tabela como um arquivo de páginas dentro de dir, só com os
 // registros (o formato está em page.go). O que descreve os objetos do banco
-// fica no catálogo (_catalog.marina), que é carregado para a memória no Open.
+// fica no catálogo (_catalog.mari), que é carregado para a memória no Open.
 type DB struct {
 	dir      string
 	pageSize int

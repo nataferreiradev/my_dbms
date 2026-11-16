@@ -138,7 +138,7 @@ they are two processes, and the lock only works inside one.
   execute()            → checks the Statement type and calls selectRows
         │
         ▼
-  storage.ReadTable()  → schema from the in-memory catalog + rows from data/pessoas.marina
+  storage.ReadTable()  → schema from the in-memory catalog + rows from data/pessoas.mari
         │
         ▼
   selectRows()         → picks the requested columns
@@ -162,9 +162,9 @@ which leaves us free to change the internal API.
 
 ## On-disk format
 
-Each table is a file at `<data_dir>/<name>.marina` holding only its records.
+Each table is a file at `<data_dir>/<name>.mari` holding only its records.
 What describes the tables lives in the **catalog**,
-`<data_dir>/_catalog.marina`, stored in the same format. The format code is
+`<data_dir>/_catalog.mari`, stored in the same format. The format code is
 in `internal/storage/page.go`.
 
 ### Pages
@@ -284,7 +284,7 @@ name           | value | description
 ---------------+-------+-------------------------------------------------------------------
 data_dir       | data  | pasta dos arquivos das tabelas
 page_size      | 4096  | tamanho das páginas em bytes, gravado no banco quando ele é criado
-format_version | 1     | versão do formato dos arquivos .marina
+format_version | 1     | versão do formato dos arquivos .mari
 
 my_dbms> SELECT * FROM _tables;
 name     | rows | pages | bytes
@@ -296,7 +296,7 @@ pessoas  |    2 |     1 |  8192
 - `_settings`: the parameters the database is running with. `my_dbms.conf`
   still exists, because `data_dir` is needed to find the database before
   opening it.
-- `_tables`: one row per `.marina` file, with the row count, the data pages
+- `_tables`: one row per `.mari` file, with the row count, the data pages
   (not counting page 0) and the file size in bytes.
 
 To add another system table: its name and schema in `system.go`, the schema
@@ -310,7 +310,7 @@ left that the catalog doesn't see. It is never deleted or overwritten:
 creating a table with that name fails until someone removes the file.
 
 Every write builds the pages in memory and writes the whole file to
-`<name>.marina.tmp`, which is then renamed over the original: if the program
+`<name>.mari.tmp`, which is then renamed over the original: if the program
 dies midway, the original stays whole. `INSERT` reads the pages, fills the
 last one and opens new pages when it runs out. `UPDATE` and `DELETE` read the
 table, change it in memory and call `ReplaceRows`, which builds the pages

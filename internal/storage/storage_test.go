@@ -216,7 +216,7 @@ func TestDropTable(t *testing.T) {
 	if err := db.DropTable("users"); err != nil {
 		t.Fatalf("DropTable: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "users.marina")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "users.mari")); err == nil {
 		t.Error("o arquivo da tabela deveria ter sido apagado")
 	}
 
@@ -338,12 +338,12 @@ func TestSystemNames(t *testing.T) {
 func TestCreateTableOrphanFile(t *testing.T) {
 	dir := t.TempDir()
 	db, _ := Open(dir, testPageSize)
-	os.WriteFile(filepath.Join(dir, "users.marina"), []byte("1,Ana\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "users.mari"), []byte("1,Ana\n"), 0o644)
 
 	if err := db.CreateTable("users", userColumns, nil); err == nil {
 		t.Error("esperava erro: arquivo existe fora do catálogo")
 	}
-	if data, _ := os.ReadFile(filepath.Join(dir, "users.marina")); string(data) != "1,Ana\n" {
+	if data, _ := os.ReadFile(filepath.Join(dir, "users.mari")); string(data) != "1,Ana\n" {
 		t.Errorf("arquivo órfão foi alterado: %q", data)
 	}
 }
@@ -402,7 +402,7 @@ func TestCreateTableKeyErrors(t *testing.T) {
 			if err := db.CreateTable("users", userColumns, tt.keys); err == nil {
 				t.Fatal("esperava erro")
 			}
-			if _, err := os.Stat(filepath.Join(dir, "users.marina")); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "users.mari")); err == nil {
 				t.Error("tabela inválida não deveria criar arquivo")
 			}
 		})
@@ -486,7 +486,7 @@ func TestOpenCorruptCatalog(t *testing.T) {
 	}
 }
 
-// rawFile monta um arquivo .marina byte a byte: a página 0 com a versão e o
+// rawFile monta um arquivo .mari byte a byte: a página 0 com a versão e o
 // page_size pedidos, seguida de rest.
 func rawFile(version, pageSize uint16, rest ...[]byte) []byte {
 	data := make([]byte, testPageSize)
@@ -521,7 +521,7 @@ func TestOpenBadCatalogFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			os.WriteFile(filepath.Join(dir, "_catalog.marina"), tt.data, 0o644)
+			os.WriteFile(filepath.Join(dir, "_catalog.mari"), tt.data, 0o644)
 			if _, err := Open(dir, testPageSize); err == nil {
 				t.Error("esperava erro")
 			}
@@ -565,7 +565,7 @@ func TestManyPages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := filepath.Join(dir, "t.marina")
+	path := filepath.Join(dir, "t.mari")
 	info, _ := os.Stat(path)
 	if info.Size()%testPageSize != 0 || info.Size()/testPageSize < 5 {
 		t.Errorf("arquivo com %d bytes: esperava várias páginas de %d", info.Size(), testPageSize)

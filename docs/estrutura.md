@@ -135,7 +135,7 @@ dois processos, e a trava só vale dentro de um.
   execute()            → olha o tipo do Statement e chama selectRows
         │
         ▼
-  storage.ReadTable()  → schema do catálogo em memória + linhas de data/pessoas.marina
+  storage.ReadTable()  → schema do catálogo em memória + linhas de data/pessoas.mari
         │
         ▼
   selectRows()         → escolhe as colunas pedidas
@@ -159,8 +159,8 @@ nos deixa livres para mudar a API interna.
 
 ## Formato em disco
 
-Cada tabela é um arquivo `<data_dir>/<nome>.marina` só com os registros. O
-que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.marina`,
+Cada tabela é um arquivo `<data_dir>/<nome>.mari` só com os registros. O
+que descreve as tabelas fica no **catálogo**, `<data_dir>/_catalog.mari`,
 gravado no mesmo formato. O código do formato está em
 `internal/storage/page.go`.
 
@@ -281,7 +281,7 @@ name           | value | description
 ---------------+-------+-------------------------------------------------------------------
 data_dir       | data  | pasta dos arquivos das tabelas
 page_size      | 4096  | tamanho das páginas em bytes, gravado no banco quando ele é criado
-format_version | 1     | versão do formato dos arquivos .marina
+format_version | 1     | versão do formato dos arquivos .mari
 
 my_dbms> SELECT * FROM _tables;
 name     | rows | pages | bytes
@@ -293,7 +293,7 @@ pessoas  |    2 |     1 |  8192
 - `_settings`: os parâmetros com que o banco está rodando. O `my_dbms.conf`
   continua existindo, porque o `data_dir` é necessário para achar o banco
   antes de abri-lo.
-- `_tables`: uma linha por arquivo `.marina`, com o número de linhas, as
+- `_tables`: uma linha por arquivo `.mari`, com o número de linhas, as
   páginas de dados (sem a página 0) e o tamanho do arquivo em bytes.
 
 Para criar outra tabela do sistema: o nome e o schema em `system.go`, o
@@ -307,7 +307,7 @@ arquivo que o catálogo não enxerga. Ele não é apagado nem sobrescrito: criar
 uma tabela com esse nome dá erro até alguém remover o arquivo.
 
 Toda escrita monta as páginas na memória e grava o arquivo inteiro em
-`<nome>.marina.tmp`, que depois é renomeado por cima do original: se o
+`<nome>.mari.tmp`, que depois é renomeado por cima do original: se o
 programa cair no meio, o original continua inteiro. O `INSERT` lê as
 páginas, enche a última e abre páginas novas quando ela acaba. `UPDATE` e
 `DELETE` leem a tabela, mudam na memória e chamam `ReplaceRows`, que monta as

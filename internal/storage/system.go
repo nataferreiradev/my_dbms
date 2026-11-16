@@ -37,7 +37,7 @@ func (db *DB) settingsRows() [][]Value {
 	return [][]Value{
 		{Text("data_dir"), Text(db.dir), Text("pasta dos arquivos das tabelas")},
 		{Text("page_size"), Text(strconv.Itoa(db.pageSize)), Text("tamanho das páginas em bytes, gravado no banco quando ele é criado")},
-		{Text("format_version"), Text(strconv.Itoa(fileVersion)), Text("versão do formato dos arquivos .marina")},
+		{Text("format_version"), Text(strconv.Itoa(fileVersion)), Text("versão do formato dos arquivos .mari")},
 	}
 }
 
