@@ -16,7 +16,8 @@ my_dbms/
 │   ├── format.go         → renders the SELECT result as a table
 │   ├── format_test.go
 │   ├── server.go         → TCP server: one goroutine per connection and a read/write lock
-│   └── server_test.go
+│   ├── server_test.go
+│   └── bench_test.go     → benchmark of SELECT by key
 ├── internal/
 │   ├── config/           → database parameters
 │   │   ├── config.go     → Config, Default(), Load(): reads my_dbms.conf
@@ -36,7 +37,8 @@ my_dbms/
 │       ├── page.go       → on-disk format: header, slotted pages, records
 │       ├── page_test.go
 │       ├── system.go     → system tables built in memory: _settings, _tables
-│       └── system_test.go
+│       ├── system_test.go
+│       └── bench_test.go → benchmarks of INSERT with a key and of reading a table
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet and tests on Linux and Windows
 ├── docs/                 → project documentation (Portuguese)

@@ -15,7 +15,8 @@ my_dbms/
 │   ├── format.go         → desenha o resultado do SELECT como tabela
 │   ├── format_test.go
 │   ├── server.go         → servidor TCP: uma goroutine por conexão e trava de leitura/escrita
-│   └── server_test.go
+│   ├── server_test.go
+│   └── bench_test.go     → benchmark do SELECT por chave
 ├── internal/
 │   ├── config/           → parâmetros do banco
 │   │   ├── config.go     → Config, Default(), Load(): lê o my_dbms.conf
@@ -35,7 +36,8 @@ my_dbms/
 │       ├── page.go       → formato em disco: cabeçalho, páginas com slots, registros
 │       ├── page_test.go
 │       ├── system.go     → tabelas do sistema montadas na memória: _settings, _tables
-│       └── system_test.go
+│       ├── system_test.go
+│       └── bench_test.go → benchmarks de INSERT com chave e de leitura da tabela
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet e testes no Linux e no Windows
 ├── docs/                 → documentação do projeto (português)
