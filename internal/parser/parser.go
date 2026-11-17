@@ -98,8 +98,8 @@ func (p *parser) columnDef(stmt *CreateTable) error {
 		return err
 	}
 	typ := p.peek().Value
-	if !p.accept("INT") && !p.accept("TEXT") {
-		return p.unexpected("um tipo (INT ou TEXT)")
+	if !p.accept("INT") && !p.accept("REAL") && !p.accept("TEXT") && !p.accept("BOOLEAN") {
+		return p.unexpected("um tipo (INT, REAL, TEXT ou BOOLEAN)")
 	}
 	col := ColumnDef{Name: name, Type: typ}
 
@@ -388,7 +388,7 @@ func (p *parser) operand() (Expr, error) {
 	return lit, nil
 }
 
-// literal lê um número, uma string ou NULL.
+// literal lê um número, uma string, TRUE, FALSE ou NULL.
 func (p *parser) literal() (Literal, error) {
 	t := p.peek()
 	switch {
@@ -398,6 +398,10 @@ func (p *parser) literal() (Literal, error) {
 	case t.Type == sql.String:
 		p.pos++
 		return Literal{Kind: String, Text: t.Value}, nil
+	case p.accept("TRUE"):
+		return Literal{Kind: Bool, Text: "TRUE"}, nil
+	case p.accept("FALSE"):
+		return Literal{Kind: Bool, Text: "FALSE"}, nil
 	case p.accept("NULL"):
 		return Literal{Kind: Null, Text: "NULL"}, nil
 	}

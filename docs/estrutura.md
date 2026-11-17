@@ -85,8 +85,12 @@ DROP INDEX p_nome;
 DROP TABLE p;
 ```
 
-- Tipos: `INT` e `TEXT`. Strings com aspas simples ou duplas; aspa repetida
-  dentro dela é uma aspa (`'it''s'`).
+- Tipos: `INT` (inteiro de 64 bits), `REAL` (ponto flutuante de 64 bits),
+  `TEXT` e `BOOLEAN` (`TRUE` ou `FALSE`). Strings com aspas simples ou
+  duplas; aspa repetida dentro dela é uma aspa (`'it''s'`).
+- Uma coluna `REAL` aceita `1.5` e também `2`; uma coluna `INT` recusa
+  `1.5`. Os tipos não se misturam no `WHERE`: `ativo = 1` ou `id = 1.5` são
+  erro, e comparar uma coluna `INT` com uma `REAL` também.
 - Restrições de coluna: `NOT NULL`, `PRIMARY KEY`, `UNIQUE`. Chaves de várias
   colunas: `PRIMARY KEY (a, b)`, `UNIQUE (a, b)`.
 - `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` e
@@ -263,6 +267,10 @@ bitmap de NULL | valor 0 | valor 1 | …
 - **Bitmap de NULL**: um bit por coluna (o bit `i % 8` do byte `i / 8`),
   ligado quando o valor é `NULL`. Um `NULL` não ocupa mais nada.
 - **INT**: 8 bytes (int64).
+- **REAL**: 8 bytes (float64, IEEE 754). `NaN`, infinito e `-0` nunca são
+  gravados: um registro com eles é tratado como corrompido.
+- **BOOLEAN**: 1 byte, `0` (`FALSE`) ou `1` (`TRUE`). Outro valor é
+  corrupção.
 - **TEXT**: o tamanho em uvarint (1 byte até 127, 2 bytes até 16383…) e
   depois os bytes do texto.
 
@@ -277,8 +285,10 @@ vírgula, aspas ou `\N`. O tamanho do registro inteiro fica no slot. Exemplo,
 ```
 
 Na memória, cada célula continua sendo um `storage.Value`: um texto ou
-`NULL`, com os números já normalizados como texto. A conversão para int64
-acontece só na hora de gravar (e de montar a chave de um índice).
+`NULL`, com os valores já normalizados como texto: `007` vira `7`, `1.50`
+vira `1.5` (`storage.FormatReal`, sem expoente), `-0.0` vira `0` e `true`
+vira `TRUE`. A conversão para int64, float64 ou byte acontece só na hora de
+gravar (e de montar a chave de um índice).
 
 ### Catálogo
 
@@ -454,9 +464,14 @@ colunas. Para isso, a chave é codificada de um jeito em que a ordem dos bytes
 |---|---|
 | `NULL` | `00` (vem antes de tudo) |
 | `INT` | `01` + 8 bytes big endian com o bit de sinal invertido |
+| `REAL` | `01` + os 8 bytes do float64 em big endian: positivo com o bit de sinal ligado, negativo com todos os bits invertidos |
+| `BOOLEAN` | `01` + `00` (`FALSE`) ou `01` (`TRUE`) |
 | `TEXT` | `01` + os bytes do texto, com cada `00` virando `00 FF`, + `00 01` |
 
-Inverter o bit de sinal põe os negativos antes dos positivos. O terminador
+Inverter o bit de sinal põe os negativos antes dos positivos. No `REAL` é
+preciso mais um passo: no IEEE 754, os bits de um negativo crescem com o
+módulo (`-2` tem bits maiores que `-1`), então os negativos têm todos os
+bits invertidos, o que também desliga o bit de sinal. O terminador
 `00 01` do texto é menor que qualquer continuação, então `'a'` vem antes de
 `'ab'`, e numa chave de várias colunas `('a', 'bc')` não se confunde com
 `('ab', 'c')`. Prefixar o tamanho, como no registro, não serviria: `'b'`

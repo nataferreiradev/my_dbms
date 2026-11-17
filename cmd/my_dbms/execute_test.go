@@ -140,6 +140,51 @@ func TestNull(t *testing.T) {
 	}
 }
 
+func TestRealAndBoolean(t *testing.T) {
+	db, err := storage.Open(t.TempDir(), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE p (id INT PRIMARY KEY, preco REAL UNIQUE, ativo BOOLEAN NOT NULL);", want: "tabela p criada"},
+		{input: "INSERT INTO p VALUES (1, 10.50, TRUE), (2, 2, false), (3, -0.25, TRUE), (4, NULL, FALSE);", want: "4 linhas inseridas"},
+		{input: "SELECT * FROM p;", want: "id | preco | ativo\n---+-------+------\n 1 |  10.5 | TRUE\n 2 |     2 | FALSE\n 3 | -0.25 | TRUE\n 4 |  NULL | FALSE\n(4 linhas)"},
+		// REAL compara como número: 10.5 > 2, mesmo com "10.5" < "2" como texto.
+		{input: "SELECT id FROM p WHERE preco > 1.5;", want: "id\n--\n 2\n 1\n(2 linhas)"},
+		{input: "SELECT id FROM p WHERE ativo = TRUE;", want: "id\n--\n 1\n 3\n(2 linhas)"},
+		{input: "SELECT id FROM p WHERE ativo < TRUE;", want: "id\n--\n 2\n 4\n(2 linhas)"},
+		{input: "INSERT INTO p VALUES (5, 10.5, TRUE);", wantErr: true},
+		// -0.0 e 0 são o mesmo valor para a chave UNIQUE.
+		{input: "INSERT INTO p VALUES (5, 0, TRUE), (6, -0.0, TRUE);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 'x', TRUE);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 1.5, 1);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 1.5, 'TRUE');", wantErr: true},
+		{input: "INSERT INTO p VALUES (7.5, 1.5, TRUE);", wantErr: true},
+		{input: "SELECT id FROM p WHERE ativo = 1;", wantErr: true},
+		{input: "SELECT id FROM p WHERE preco = TRUE;", wantErr: true},
+		{input: "UPDATE p SET ativo = FALSE, preco = 99.9 WHERE id = 1;", want: "1 linha atualizada"},
+		{input: "CREATE INDEX p_ativo_preco ON p (ativo, preco);", want: "índice p_ativo_preco criado"},
+		{input: "EXPLAIN SELECT * FROM p WHERE ativo = FALSE AND preco > 50;", want: "busca no índice p_ativo_preco da tabela p (ativo = FALSE AND preco > 50)"},
+		{input: "SELECT id, preco FROM p WHERE ativo = FALSE AND preco > 50;", want: "id | preco\n---+------\n 1 |  99.9\n(1 linha)"},
+		{input: "SELECT definition FROM _catalog WHERE name = 'p';", want: "definition\n-------------------------------------------------\nid INT NOT NULL,preco REAL,ativo BOOLEAN NOT NULL\n(1 linha)"},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
 func TestInsertColumnsAndRows(t *testing.T) {
 	db, err := storage.Open(t.TempDir(), 4096)
 	if err != nil {

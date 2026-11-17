@@ -86,8 +86,12 @@ DROP INDEX p_nome;
 DROP TABLE p;
 ```
 
-- Types: `INT` and `TEXT`. Strings use single or double quotes; a doubled
-  quote inside one is a quote (`'it''s'`).
+- Types: `INT` (64-bit integer), `REAL` (64-bit floating point), `TEXT` and
+  `BOOLEAN` (`TRUE` or `FALSE`). Strings use single or double quotes; a
+  doubled quote inside one is a quote (`'it''s'`).
+- A `REAL` column accepts `1.5` and also `2`; an `INT` column rejects `1.5`.
+  Types don't mix in `WHERE`: `ativo = 1` or `id = 1.5` are errors, and so is
+  comparing an `INT` column with a `REAL` one.
 - Column constraints: `NOT NULL`, `PRIMARY KEY`, `UNIQUE`. Multi-column keys:
   `PRIMARY KEY (a, b)`, `UNIQUE (a, b)`.
 - `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` and
@@ -264,6 +268,10 @@ NULL bitmap | value 0 | value 1 | …
 - **NULL bitmap**: one bit per column (bit `i % 8` of byte `i / 8`), set when
   the value is `NULL`. A `NULL` takes no other space.
 - **INT**: 8 bytes (int64).
+- **REAL**: 8 bytes (float64, IEEE 754). `NaN`, infinity and `-0` are never
+  written: a record holding them is treated as corrupt.
+- **BOOLEAN**: 1 byte, `0` (`FALSE`) or `1` (`TRUE`). Any other value is
+  corruption.
 - **TEXT**: the length as a uvarint (1 byte up to 127, 2 bytes up to
   16383…) followed by the text bytes.
 
@@ -279,8 +287,10 @@ TEXT)`:
 ```
 
 In memory, each cell is still a `storage.Value`: a text or `NULL`, with
-numbers already normalized as text. The conversion to int64 only happens when
-writing (and when building an index key).
+values already normalized as text: `007` becomes `7`, `1.50` becomes `1.5`
+(`storage.FormatReal`, no exponent), `-0.0` becomes `0` and `true` becomes
+`TRUE`. The conversion to int64, float64 or a byte only happens when writing
+(and when building an index key).
 
 ### Catalog
 
@@ -453,9 +463,14 @@ types. For that, keys are encoded so that byte order is value order
 |---|---|
 | `NULL` | `00` (sorts before everything) |
 | `INT` | `01` + 8 bytes big endian with the sign bit flipped |
+| `REAL` | `01` + the 8 float64 bytes in big endian: positives with the sign bit set, negatives with every bit flipped |
+| `BOOLEAN` | `01` + `00` (`FALSE`) or `01` (`TRUE`) |
 | `TEXT` | `01` + the text bytes, with each `00` becoming `00 FF`, + `00 01` |
 
-Flipping the sign bit puts negatives before positives. The text terminator
+Flipping the sign bit puts negatives before positives. `REAL` needs one more
+step: in IEEE 754, a negative's bits grow with its magnitude (`-2` has larger
+bits than `-1`), so negatives get every bit flipped, which also clears the
+sign bit. The text terminator
 `00 01` is smaller than any continuation, so `'a'` sorts before `'ab'`, and in
 a multi-column key `('a', 'bc')` isn't confused with `('ab', 'c')`. A length
 prefix, as in records, wouldn't work: `'b'` (length 1) would sort before

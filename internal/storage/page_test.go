@@ -2,6 +2,8 @@ package storage
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,6 +29,11 @@ func TestRecordRoundTrip(t *testing.T) {
 		{name: "caracteres especiais", columns: userColumns, row: texts("1", "a,b \"c\"\n\\N ção")},
 		{name: "texto longo", columns: userColumns, row: texts("1", strings.Repeat("x", 300))},
 		{name: "bitmap de 2 bytes", columns: nine, row: append(texts("1", "2", "3", "4", "5", "6", "7", "8"), Null)},
+		{name: "REAL e BOOLEAN", columns: realBoolColumns, row: texts("1.5", "TRUE")},
+		{name: "REAL negativo e FALSE", columns: realBoolColumns, row: texts("-0.25", "FALSE")},
+		{name: "REAL inteiro", columns: realBoolColumns, row: texts("3", "TRUE")},
+		{name: "REAL grande", columns: realBoolColumns, row: texts("123456789.125", "FALSE")},
+		{name: "REAL e BOOLEAN NULL", columns: realBoolColumns, row: []Value{Null, Null}},
 	}
 
 	for _, tt := range tests {
@@ -72,6 +79,8 @@ func TestEncodeRecordErrors(t *testing.T) {
 		{name: "INT com texto", columns: userColumns, row: texts("abc", "x")},
 		{name: "INT fora do int64", columns: userColumns, row: texts("99999999999999999999", "x")},
 		{name: "tipo desconhecido", columns: []Column{{Name: "f", Type: "FLOAT"}}, row: texts("1.5")},
+		{name: "REAL com texto", columns: realBoolColumns, row: texts("abc", "TRUE")},
+		{name: "BOOLEAN com texto", columns: realBoolColumns, row: texts("1", "SIM")},
 	}
 
 	for _, tt := range tests {
@@ -101,6 +110,52 @@ func TestDecodeRecordErrors(t *testing.T) {
 				t.Error("esperava erro")
 			}
 		})
+	}
+}
+
+var realBoolColumns = []Column{{Name: "preco", Type: "REAL"}, {Name: "ativo", Type: "BOOLEAN"}}
+
+func TestDecodeRealBoolErrors(t *testing.T) {
+	// record monta um registro com o float64 f e o byte b do BOOLEAN.
+	record := func(f float64, b byte) []byte {
+		return append(binary.LittleEndian.AppendUint64([]byte{0}, math.Float64bits(f)), b)
+	}
+	tests := []struct {
+		name string
+		rec  []byte
+	}{
+		{name: "REAL cortado", rec: []byte{0, 1, 2, 3}},
+		{name: "BOOLEAN faltando", rec: record(1.5, 0)[:9]},
+		{name: "BOOLEAN com 2", rec: record(1.5, 2)},
+		{name: "REAL NaN", rec: record(math.NaN(), 1)},
+		{name: "REAL infinito", rec: record(math.Inf(-1), 1)},
+		{name: "REAL -0", rec: record(math.Copysign(0, -1), 1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := decodeRecord(realBoolColumns, tt.rec); err == nil {
+				t.Error("esperava erro")
+			}
+		})
+	}
+}
+
+func TestFormatReal(t *testing.T) {
+	tests := map[float64]string{
+		1.5:                  "1.5",
+		1500:                 "1500",
+		0.1:                  "0.1",
+		-2.25:                "-2.25",
+		math.Copysign(0, -1): "0",
+		1e21:                 "1000000000000000000000",
+		0.000001:             "0.000001",
+		123456789.123456789:  "123456789.12345679",
+	}
+	for f, want := range tests {
+		if got := FormatReal(f); got != want {
+			t.Errorf("FormatReal(%v) = %q, want %q", f, got, want)
+		}
 	}
 }
 
@@ -226,19 +281,21 @@ func TestCreateFile(t *testing.T) {
 	}
 }
 
-// fuzzColumns cobre os dois tipos e mais de 8 colunas, para o bitmap de NULL
-// ter dois bytes.
+// fuzzColumns cobre todos os tipos e mais de 8 colunas, para o bitmap de
+// NULL ter dois bytes. REAL e BOOLEAN ficam no fim, para o caso guardado em
+// testdata continuar batendo nas mesmas colunas TEXT.
 var fuzzColumns = []Column{
 	{Name: "a", Type: "INT"}, {Name: "b", Type: "TEXT"}, {Name: "c", Type: "INT"},
 	{Name: "d", Type: "TEXT"}, {Name: "e", Type: "INT"}, {Name: "f", Type: "TEXT"},
 	{Name: "g", Type: "INT"}, {Name: "h", Type: "TEXT"}, {Name: "i", Type: "TEXT"},
+	{Name: "j", Type: "REAL"}, {Name: "k", Type: "BOOLEAN"},
 }
 
 // FuzzDecodeRecord confere que bytes quaisquer dão erro, nunca panic, e que
 // um registro que decodifica volta aos mesmos bytes quando gravado de novo.
 // Rode com: go test ./internal/storage -fuzz FuzzDecodeRecord
 func FuzzDecodeRecord(f *testing.F) {
-	row := []Value{Text("1"), Text("Ana"), Null, Text(""), Text("-9"), Null, Text("0"), Text("x"), Text("é")}
+	row := []Value{Text("1"), Text("Ana"), Null, Text(""), Text("-9"), Null, Text("0"), Text("x"), Text("é"), Text("-1.5"), Text("TRUE")}
 	rec, err := encodeRecord(fuzzColumns, row)
 	if err != nil {
 		f.Fatal(err)

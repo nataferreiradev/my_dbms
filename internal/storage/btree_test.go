@@ -14,7 +14,11 @@ func TestKeyOrder(t *testing.T) {
 	ints := []Value{Null, Text(strconv.Itoa(math.MinInt64)), Text("-100"), Text("-1"), Text("0"), Text("1"), Text("255"), Text("256"), Text(strconv.Itoa(math.MaxInt64))}
 	texts := []Value{Null, Text(""), Text("\x00"), Text("\x00\x00"), Text("\x00\x01"), Text("a"), Text("a\x00"), Text("ab"), Text("b"), Text("é")}
 
-	for typ, values := range map[string][]Value{"INT": ints, "TEXT": texts} {
+	reals := []Value{Null, Text(FormatReal(-math.MaxFloat64)), Text("-100.5"), Text("-1"), Text("-0.5"), Text("-0.000001"), Text("0"),
+		Text(FormatReal(math.SmallestNonzeroFloat64)), Text("0.5"), Text("1"), Text("1.5"), Text("100"), Text(FormatReal(math.MaxFloat64))}
+	bools := []Value{Null, Text("FALSE"), Text("TRUE")}
+
+	for typ, values := range map[string][]Value{"INT": ints, "TEXT": texts, "REAL": reals, "BOOLEAN": bools} {
 		for i := 1; i < len(values); i++ {
 			a, _ := appendKey(nil, typ, values[i-1])
 			b, _ := appendKey(nil, typ, values[i])

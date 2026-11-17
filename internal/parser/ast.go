@@ -99,11 +99,12 @@ type LiteralKind int
 const (
 	Number LiteralKind = iota
 	String
+	Bool
 	Null
 )
 
-// Literal é um valor escrito no comando: 42, -1.5, 'Ana' ou NULL. Text é o
-// texto como veio, sem aspas.
+// Literal é um valor escrito no comando: 42, -1.5, 'Ana', TRUE, FALSE ou
+// NULL. Text é o texto como veio, sem aspas (TRUE e FALSE em maiúsculo).
 type Literal struct {
 	Kind LiteralKind
 	Text string

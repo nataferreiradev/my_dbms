@@ -9,8 +9,9 @@ ler de cima a baixo.
 
 ## O que ele já faz
 
-- `CREATE TABLE` com os tipos `INT` e `TEXT` e as restrições `NOT NULL`,
-  `PRIMARY KEY` e `UNIQUE`, inclusive chaves de várias colunas
+- `CREATE TABLE` com os tipos `INT`, `REAL`, `TEXT` e `BOOLEAN` e as
+  restrições `NOT NULL`, `PRIMARY KEY` e `UNIQUE`, inclusive chaves de
+  várias colunas
 - `INSERT` com lista de colunas e com várias linhas de uma vez
 - `SELECT` com projeção de colunas e `WHERE` com `=`, `<>`, `<`, `>`, `<=`,
   `>=`, `AND`, `OR`, parênteses e `IS [NOT] NULL`
@@ -92,8 +93,10 @@ SELECT nome FROM pessoas WHERE cidade IS NULL;
 UPDATE pessoas SET cidade = 'Recife' WHERE id = 4;
 DELETE FROM pessoas WHERE idade < 18;
 
--- Chave composta
-CREATE TABLE matriculas (aluno INT, curso INT, nota INT, PRIMARY KEY (aluno, curso));
+-- Chave composta, REAL e BOOLEAN
+CREATE TABLE matriculas (aluno INT, curso INT, nota REAL, aprovado BOOLEAN, PRIMARY KEY (aluno, curso));
+INSERT INTO matriculas VALUES (1, 10, 8.5, TRUE), (2, 10, 4.75, FALSE);
+SELECT aluno, nota FROM matriculas WHERE aprovado = TRUE AND nota >= 7;
 
 -- Índice: o EXPLAIN mostra se ele vai ser usado
 CREATE INDEX pessoas_cidade ON pessoas (cidade, idade);
@@ -116,7 +119,7 @@ Os erros dizem o que estava errado e onde:
 
 ```
 my_dbms> CREATE TABLE t (id FLOAT);
-erro: posição 20: esperava um tipo (INT ou TEXT), veio "FLOAT"
+erro: posição 20: esperava um tipo (INT, REAL, TEXT ou BOOLEAN), veio "FLOAT"
 my_dbms> SELECT * FROM pessoas WHERE idade = 'trinta';
 erro: WHERE: esperava um valor INT, veio 'trinta'
 my_dbms> INSERT INTO pessoas (id, cidade) VALUES (8, 'Natal');
@@ -144,7 +147,8 @@ texto ──► sql.Lex() ──► parser.Parse() ──► execute() ──►
 4. **Storage** (`internal/storage`): guarda cada tabela em
    `data/<tabela>.mari`, num formato binário próprio dividido em páginas
    de tamanho fixo (slotted pages, como no SQLite e no PostgreSQL). INT é
-   gravado como int64, TEXT com o tamanho na frente e NULL num bitmap. O
+   gravado como int64, REAL como float64, BOOLEAN num byte, TEXT com o
+   tamanho na frente e NULL num bitmap. O
    catálogo `data/_catalog.mari` descreve colunas, chaves e índices, no
    mesmo formato. Cada linha tem um endereço fixo (página, slot), que é o
    que os índices B+tree guardam, cada um no seu arquivo. Cada comando é uma

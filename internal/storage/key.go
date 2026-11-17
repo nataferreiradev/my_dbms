@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strconv"
 )
 
@@ -15,6 +16,10 @@ import (
 //     vem antes de tudo.
 //   - INT vira 8 bytes big endian com o bit de sinal invertido: os negativos
 //     vêm antes dos positivos, e -1 vem logo antes de 0.
+//   - REAL vira os 8 bytes do float64 (IEEE 754) em big endian. Num positivo,
+//     o bit de sinal é ligado; num negativo, todos os bits são invertidos,
+//     porque no IEEE 754 um negativo maior em módulo tem bits maiores.
+//   - BOOLEAN vira 0x00 (FALSE) ou 0x01 (TRUE), como no PostgreSQL.
 //   - TEXT vira os bytes do texto com cada 0x00 trocado por 0x00 0xFF, e
 //     termina em 0x00 0x01. O terminador é menor que qualquer continuação,
 //     então "a" < "ab", e uma chave de várias colunas não mistura o fim de
@@ -42,6 +47,26 @@ func appendKey(dst []byte, typ string, v Value) ([]byte, error) {
 			return nil, fmt.Errorf("%q não é um INT", v.Text)
 		}
 		return binary.BigEndian.AppendUint64(dst, uint64(n)^(1<<63)), nil
+	case "REAL":
+		f, err := strconv.ParseFloat(v.Text, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%q não é um REAL", v.Text)
+		}
+		bits := math.Float64bits(f)
+		if bits&(1<<63) != 0 {
+			bits = ^bits // negativo: inverte tudo, para -2 vir antes de -1
+		} else {
+			bits |= 1 << 63 // positivo: liga o bit de sinal, para vir depois dos negativos
+		}
+		return binary.BigEndian.AppendUint64(dst, bits), nil
+	case "BOOLEAN":
+		switch v.Text {
+		case "FALSE":
+			return append(dst, 0x00), nil
+		case "TRUE":
+			return append(dst, 0x01), nil
+		}
+		return nil, fmt.Errorf("%q não é um BOOLEAN", v.Text)
 	case "TEXT":
 		for _, b := range []byte(v.Text) {
 			dst = append(dst, b)

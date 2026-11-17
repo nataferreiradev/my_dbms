@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,8 +68,9 @@ func maxRecordSize(pageSize int) int {
 //	bitmap de NULL | valor 0 | valor 1 | ...
 //
 // O bitmap tem um bit por coluna (o bit i%8 do byte i/8), ligado quando o
-// valor é NULL; um NULL não ocupa mais nada. INT ocupa 8 bytes (int64) e
-// TEXT é o tamanho em uvarint seguido dos bytes do texto.
+// valor é NULL; um NULL não ocupa mais nada. INT ocupa 8 bytes (int64), REAL
+// ocupa 8 bytes (float64), BOOLEAN ocupa 1 byte (0 ou 1) e TEXT é o tamanho
+// em uvarint seguido dos bytes do texto.
 func encodeRecord(columns []Column, row []Value) ([]byte, error) {
 	rec := make([]byte, (len(columns)+7)/8)
 	for i, c := range columns {
@@ -84,6 +86,21 @@ func encodeRecord(columns []Column, row []Value) ([]byte, error) {
 				return nil, fmt.Errorf("coluna %s: %q não é um INT", c.Name, v.Text)
 			}
 			rec = binary.LittleEndian.AppendUint64(rec, uint64(n))
+		case "REAL":
+			f, err := strconv.ParseFloat(v.Text, 64)
+			if err != nil {
+				return nil, fmt.Errorf("coluna %s: %q não é um REAL", c.Name, v.Text)
+			}
+			rec = binary.LittleEndian.AppendUint64(rec, math.Float64bits(f))
+		case "BOOLEAN":
+			switch v.Text {
+			case "TRUE":
+				rec = append(rec, 1)
+			case "FALSE":
+				rec = append(rec, 0)
+			default:
+				return nil, fmt.Errorf("coluna %s: %q não é um BOOLEAN", c.Name, v.Text)
+			}
 		case "TEXT":
 			rec = binary.AppendUvarint(rec, uint64(len(v.Text)))
 			rec = append(rec, v.Text...)
@@ -119,6 +136,30 @@ func decodeRecord(columns []Column, rec []byte) ([]Value, error) {
 			n := int64(binary.LittleEndian.Uint64(rec[pos:]))
 			row[i] = Text(strconv.FormatInt(n, 10))
 			pos += 8
+		case "REAL":
+			if len(rec)-pos < 8 {
+				return nil, fmt.Errorf("coluna %s: REAL cortado", c.Name)
+			}
+			f := math.Float64frombits(binary.LittleEndian.Uint64(rec[pos:]))
+			// NaN, infinito e -0 nunca são gravados (veja FormatReal).
+			if math.IsNaN(f) || math.IsInf(f, 0) || (f == 0 && math.Signbit(f)) {
+				return nil, fmt.Errorf("coluna %s: REAL inválido", c.Name)
+			}
+			row[i] = Text(FormatReal(f))
+			pos += 8
+		case "BOOLEAN":
+			if len(rec)-pos < 1 {
+				return nil, fmt.Errorf("coluna %s: BOOLEAN cortado", c.Name)
+			}
+			switch rec[pos] {
+			case 0:
+				row[i] = Text("FALSE")
+			case 1:
+				row[i] = Text("TRUE")
+			default:
+				return nil, fmt.Errorf("coluna %s: BOOLEAN com o byte %d", c.Name, rec[pos])
+			}
+			pos++
 		case "TEXT":
 			size, n := binary.Uvarint(rec[pos:])
 			if n <= 0 || size > uint64(len(rec)-pos-n) {

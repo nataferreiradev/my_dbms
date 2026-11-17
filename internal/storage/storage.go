@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -58,6 +59,19 @@ var Null = Value{Null: true}
 // Text cria um valor que não é NULL.
 func Text(s string) Value {
 	return Value{Text: s}
+}
+
+// columnTypes são os tipos de coluna que o banco conhece.
+var columnTypes = []string{"INT", "REAL", "TEXT", "BOOLEAN"}
+
+// FormatReal escreve um REAL como ele fica guardado no Value: sem expoente
+// ("1500", "0.25") e com o menor número de dígitos que volta ao mesmo
+// float64. O -0 vira 0, para os dois não serem valores diferentes numa chave.
+func FormatReal(f float64) string {
+	if f == 0 {
+		f = 0
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // IndexKind diz que tipo de índice é. O valor é o que vai na coluna type do
@@ -225,8 +239,8 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Index) error {
 			return fmt.Errorf("coluna %q repetida", c.Name)
 		}
 		seen[c.Name] = true
-		if c.Type != "INT" && c.Type != "TEXT" {
-			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT ou TEXT)", c.Name, c.Type)
+		if !slices.Contains(columnTypes, c.Type) {
+			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT, REAL, TEXT ou BOOLEAN)", c.Name, c.Type)
 		}
 	}
 	keys, err := nameKeys(name, columns, keys)

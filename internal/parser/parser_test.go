@@ -63,6 +63,27 @@ func TestParse(t *testing.T) {
 			}}},
 		},
 		{
+			input: "CREATE TABLE t (preco REAL NOT NULL, ativo BOOLEAN)",
+			want: &CreateTable{
+				Name: "t",
+				Columns: []ColumnDef{
+					{Name: "preco", Type: "REAL", NotNull: true},
+					{Name: "ativo", Type: "BOOLEAN"},
+				},
+			},
+		},
+		{
+			input: "INSERT INTO t VALUES (true, FALSE)",
+			want: &Insert{Table: "t", Rows: [][]Literal{{
+				{Kind: Bool, Text: "TRUE"},
+				{Kind: Bool, Text: "FALSE"},
+			}}},
+		},
+		{
+			input: "SELECT * FROM t WHERE ativo = TRUE",
+			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"ativo"}, Right: Literal{Bool, "TRUE"}}},
+		},
+		{
 			input: `INSERT INTO t (nome, id) VALUES ('Ana', 1), ('Bia', 2)`,
 			want: &Insert{Table: "t", Columns: []string{"nome", "id"}, Rows: [][]Literal{
 				{{Kind: String, Text: "Ana"}, {Kind: Number, Text: "1"}},
@@ -174,7 +195,7 @@ func TestParseErrors(t *testing.T) {
 		{input: ";", wantErr: "comando vazio"},
 		{input: "DESTROY t", wantErr: "não suportado"},
 		{input: "CREATE TABLE t;", wantErr: `esperava "(", mas o comando acabou`},
-		{input: "CREATE TABLE t (id FLOAT)", wantErr: `posição 20: esperava um tipo (INT ou TEXT), veio "FLOAT"`},
+		{input: "CREATE TABLE t (id FLOAT)", wantErr: `posição 20: esperava um tipo (INT, REAL, TEXT ou BOOLEAN), veio "FLOAT"`},
 		{input: "CREATE TABLE t (id INT nome TEXT)", wantErr: `esperava "," ou ")"`},
 		{input: "CREATE TABLE t (id INT PRIMARY)", wantErr: `esperava "KEY"`},
 		{input: "CREATE TABLE t (id INT NOT)", wantErr: `esperava "NULL"`},

@@ -247,9 +247,10 @@ func count(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, plural)
 }
 
-// literalValue confere se o literal serve para o tipo (INT ou TEXT) e devolve
-// o valor como ele vai para o disco: NULL, número inteiro normalizado ou o
-// texto. NOT NULL é conferido pelo storage.
+// literalValue confere se o literal serve para o tipo da coluna e devolve o
+// valor como ele vai para o disco: NULL, número normalizado ("007" vira "7",
+// "1.50" vira "1.5"), TRUE/FALSE ou o texto. NOT NULL é conferido pelo
+// storage.
 func literalValue(lit parser.Literal, typ string) (storage.Value, error) {
 	switch {
 	case lit.Kind == parser.Null:
@@ -260,6 +261,16 @@ func literalValue(lit parser.Literal, typ string) (storage.Value, error) {
 			return storage.Value{}, fmt.Errorf("%s não é um número inteiro", lit.Text)
 		}
 		return storage.Text(strconv.Itoa(n)), nil
+	case typ == "REAL" && lit.Kind == parser.Number:
+		f, err := strconv.ParseFloat(lit.Text, 64)
+		if err != nil {
+			// O lexer só deixa passar dígitos, então o erro aqui é número
+			// grande demais para um float64.
+			return storage.Value{}, fmt.Errorf("%s não cabe num REAL", lit.Text)
+		}
+		return storage.Text(storage.FormatReal(f)), nil
+	case typ == "BOOLEAN" && lit.Kind == parser.Bool:
+		return storage.Text(lit.Text), nil
 	case typ == "TEXT" && lit.Kind == parser.String:
 		return storage.Text(lit.Text), nil
 	}
@@ -350,7 +361,7 @@ func (r *selectResult) format() string {
 	right := make([]bool, len(r.Columns))
 	for i, c := range r.Columns {
 		headers[i] = c.Name
-		right[i] = c.Type == "INT"
+		right[i] = c.Type == "INT" || c.Type == "REAL"
 	}
 	rows := make([][]string, len(r.Rows))
 	for i, row := range r.Rows {
