@@ -15,11 +15,14 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      # Sem cache: o projeto não tem dependências (nem go.sum), então o
+      # setup-go não tem o que guardar e só avisaria que o go.sum não existe.
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
 
       # Só no Linux: no Windows o checkout converte LF em CRLF e o gofmt
       # acusaria todos os arquivos.
