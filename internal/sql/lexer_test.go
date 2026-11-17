@@ -117,3 +117,29 @@ func TestLexErrorPosition(t *testing.T) {
 		t.Errorf("erro = %v, queria a posição 13", err)
 	}
 }
+
+// FuzzLex confere que nenhuma entrada derruba o lexer e que as posições dos
+// tokens ficam dentro da entrada.
+// Rode com: go test ./internal/sql -fuzz FuzzLex
+func FuzzLex(f *testing.F) {
+	for _, s := range []string{
+		"SELECT * FROM t WHERE id >= 10 AND nome <> 'it''s';",
+		`INSERT INTO t VALUES (1, "a"), (-2, NULL);`,
+		"'sem fim",
+		"ção = 1",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		tokens, err := Lex(input)
+		if err != nil {
+			return
+		}
+		n := len([]rune(input))
+		for _, tok := range tokens {
+			if tok.Pos < 0 || tok.Pos >= n {
+				t.Errorf("token %q na posição %d, fora da entrada de %d caracteres", tok.Value, tok.Pos, n)
+			}
+		}
+	})
+}

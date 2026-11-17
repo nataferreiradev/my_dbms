@@ -134,26 +134,38 @@ func columnType(e parser.Expr, schema storage.Schema) string {
 	return ""
 }
 
-// literalType devolve o tipo natural de um literal: INT para número, TEXT
-// para string e "" para NULL ou para o que não é literal.
+// literalType devolve o tipo natural de um literal: INT para número inteiro,
+// REAL para número com ponto, TEXT para string, BOOLEAN para TRUE e FALSE e
+// "" para NULL ou para o que não é literal.
 func literalType(e parser.Expr) string {
 	if lit, ok := e.(parser.Literal); ok {
 		switch lit.Kind {
 		case parser.Number:
+			if strings.Contains(lit.Text, ".") {
+				return "REAL"
+			}
 			return "INT"
 		case parser.String:
 			return "TEXT"
+		case parser.Bool:
+			return "BOOLEAN"
 		}
 	}
 	return ""
 }
 
-// compareValues devolve -1, 0 ou 1. INT compara como número (senão "10"
-// viria antes de "9"), TEXT compara byte a byte.
+// compareValues devolve -1, 0 ou 1. INT e REAL comparam como número (senão
+// "10" viria antes de "9"). TEXT compara byte a byte, e BOOLEAN também:
+// "FALSE" < "TRUE", que é a ordem do SQL.
 func compareValues(a, b storage.Value, typ string) int {
-	if typ == "INT" {
+	switch typ {
+	case "INT":
 		x, _ := strconv.Atoi(a.Text)
 		y, _ := strconv.Atoi(b.Text)
+		return cmp.Compare(x, y)
+	case "REAL":
+		x, _ := strconv.ParseFloat(a.Text, 64)
+		y, _ := strconv.ParseFloat(b.Text, 64)
 		return cmp.Compare(x, y)
 	}
 	return strings.Compare(a.Text, b.Text)

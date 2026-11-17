@@ -21,7 +21,7 @@ func TestSettings(t *testing.T) {
 	for _, row := range table.Rows {
 		got[row[0].Text] = row[1].Text
 	}
-	want := map[string]string{"data_dir": dir, "page_size": "2048", "format_version": "1"}
+	want := map[string]string{"data_dir": dir, "page_size": "2048", "format_version": "2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("_settings = %v, want %v", got, want)
 	}
@@ -30,7 +30,7 @@ func TestSettings(t *testing.T) {
 func TestTables(t *testing.T) {
 	dir := t.TempDir()
 	db, _ := Open(dir, testPageSize)
-	db.CreateTable("users", userColumns, []Key{{Kind: PrimaryKey, Columns: []string{"id"}}})
+	db.CreateTable("users", userColumns, []Index{{Kind: PrimaryKey, Columns: []string{"id"}}})
 	db.CreateTable("vazia", userColumns, nil)
 
 	// Cada registro tem 50 bytes + 4 do slot: cabem 18 por página, e 50
@@ -58,7 +58,7 @@ func TestTables(t *testing.T) {
 
 	// bytes tem que bater com o tamanho real do arquivo.
 	for _, row := range table.Rows {
-		info, err := os.Stat(filepath.Join(dir, row[0].Text+".marina"))
+		info, err := os.Stat(filepath.Join(dir, row[0].Text+".mari"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func TestTables(t *testing.T) {
 }
 
 func TestSystemTablesReadOnly(t *testing.T) {
-	for _, name := range []string{"_settings", "_tables"} {
+	for _, name := range []string{"_settings", "_tables", "_indexes"} {
 		t.Run(name, func(t *testing.T) {
 			db, _ := Open(t.TempDir(), testPageSize)
 			if err := db.CreateTable(name, userColumns, nil); err == nil {
@@ -78,8 +78,8 @@ func TestSystemTablesReadOnly(t *testing.T) {
 			if err := db.InsertRows(name, [][]Value{texts("a", "b", "c")}); err == nil {
 				t.Error("InsertRows: esperava erro")
 			}
-			if err := db.ReplaceRows(name, nil); err == nil {
-				t.Error("ReplaceRows: esperava erro")
+			if err := db.DeleteRows(name, nil); err == nil {
+				t.Error("DeleteRows: esperava erro")
 			}
 			if err := db.DropTable(name); err == nil {
 				t.Error("DropTable: esperava erro")

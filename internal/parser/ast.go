@@ -1,7 +1,8 @@
 package parser
 
 // Statement é um comando já analisado. O tipo concreto diz qual:
-// *CreateTable, *Insert, *Select, *Update, *Delete ou *DropTable.
+// *CreateTable, *Insert, *Select, *Update, *Delete, *DropTable, *CreateIndex,
+// *DropIndex ou *Explain.
 type Statement interface {
 	statement()
 }
@@ -65,23 +66,45 @@ type DropTable struct {
 	Name string
 }
 
+// CreateIndex é CREATE INDEX nome ON tabela (colunas).
+type CreateIndex struct {
+	Name    string
+	Table   string
+	Columns []string
+}
+
+// DropIndex é DROP INDEX nome.
+type DropIndex struct {
+	Name string
+}
+
+// Explain é EXPLAIN seguido de um SELECT, UPDATE ou DELETE: mostra como as
+// linhas seriam buscadas, sem rodar o comando.
+type Explain struct {
+	Statement Statement
+}
+
 func (*CreateTable) statement() {}
 func (*Insert) statement()      {}
 func (*Select) statement()      {}
 func (*Update) statement()      {}
 func (*Delete) statement()      {}
 func (*DropTable) statement()   {}
+func (*CreateIndex) statement() {}
+func (*DropIndex) statement()   {}
+func (*Explain) statement()     {}
 
 type LiteralKind int
 
 const (
 	Number LiteralKind = iota
 	String
+	Bool
 	Null
 )
 
-// Literal é um valor escrito no comando: 42, -1.5, 'Ana' ou NULL. Text é o
-// texto como veio, sem aspas.
+// Literal é um valor escrito no comando: 42, -1.5, 'Ana', TRUE, FALSE ou
+// NULL. Text é o texto como veio, sem aspas (TRUE e FALSE em maiúsculo).
 type Literal struct {
 	Kind LiteralKind
 	Text string

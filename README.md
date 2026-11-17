@@ -9,17 +9,22 @@ ler de cima a baixo.
 
 ## O que ele já faz
 
-- `CREATE TABLE` com os tipos `INT` e `TEXT` e as restrições `NOT NULL`,
-  `PRIMARY KEY` e `UNIQUE`, inclusive chaves de várias colunas
-- `INSERT` com lista de colunas e com várias linhas de uma vez (entram todas
-  ou nenhuma)
+- `CREATE TABLE` com os tipos `INT`, `REAL`, `TEXT` e `BOOLEAN` e as
+  restrições `NOT NULL`, `PRIMARY KEY` e `UNIQUE`, inclusive chaves de
+  várias colunas
+- `INSERT` com lista de colunas e com várias linhas de uma vez
 - `SELECT` com projeção de colunas e `WHERE` com `=`, `<>`, `<`, `>`, `<=`,
   `>=`, `AND`, `OR`, parênteses e `IS [NOT] NULL`
 - `UPDATE`, `DELETE` e `DROP TABLE`
+- índices B+tree: um para cada `PRIMARY KEY` e `UNIQUE` (é ele que confere a
+  chave) e os criados com `CREATE INDEX`; `SELECT`, `UPDATE` e `DELETE`
+  escolhem entre o índice e a varredura completa, e o `EXPLAIN` mostra qual
+- transações: cada comando grava tudo ou nada, com um rollback journal que
+  desfaz um commit interrompido por uma queda
 - `NULL` com a semântica do SQL padrão (lógica de três valores)
 - tabelas do sistema que podem ser consultadas: o catálogo (`_catalog`), os
-  parâmetros do banco (`_settings`) e o espaço que cada tabela ocupa em disco
-  (`_tables`)
+  parâmetros do banco (`_settings`), o espaço que cada tabela ocupa em disco
+  (`_tables`) e os índices, com a altura de cada árvore (`_indexes`)
 - mensagens de erro em português, com a posição do problema no comando
 
 ## Como rodar
@@ -59,6 +64,17 @@ Elisa | Recife |    19
 (3 linhas)
 ```
 
+## Como servidor
+
+```
+go run ./cmd/my_dbms -listen localhost:4321
+```
+
+Atende vários clientes ao mesmo tempo por TCP: um comando por linha, e uma
+linha de JSON de resposta para cada um. Dá para testar com
+`nc localhost 4321`. O protocolo e como a concorrência funciona estão em
+[docs/estrutura.md](docs/estrutura.md#servidor).
+
 ## Mais exemplos
 
 ```sql
@@ -77,8 +93,17 @@ SELECT nome FROM pessoas WHERE cidade IS NULL;
 UPDATE pessoas SET cidade = 'Recife' WHERE id = 4;
 DELETE FROM pessoas WHERE idade < 18;
 
--- Chave composta
-CREATE TABLE matriculas (aluno INT, curso INT, nota INT, PRIMARY KEY (aluno, curso));
+-- Chave composta, REAL e BOOLEAN
+CREATE TABLE matriculas (aluno INT, curso INT, nota REAL, aprovado BOOLEAN, PRIMARY KEY (aluno, curso));
+INSERT INTO matriculas VALUES (1, 10, 8.5, TRUE), (2, 10, 4.75, FALSE);
+SELECT aluno, nota FROM matriculas WHERE aprovado = TRUE AND nota >= 7;
+
+-- Índice: o EXPLAIN mostra se ele vai ser usado
+CREATE INDEX pessoas_cidade ON pessoas (cidade, idade);
+EXPLAIN SELECT nome FROM pessoas WHERE cidade = 'Recife' AND idade >= 18;
+-- busca no índice pessoas_cidade da tabela pessoas (cidade = 'Recife' AND idade >= 18)
+SELECT * FROM _indexes;
+DROP INDEX pessoas_cidade;
 
 -- Como o banco descreve as próprias tabelas
 SELECT * FROM _catalog;
@@ -94,7 +119,7 @@ Os erros dizem o que estava errado e onde:
 
 ```
 my_dbms> CREATE TABLE t (id FLOAT);
-erro: posição 20: esperava um tipo (INT ou TEXT), veio "FLOAT"
+erro: posição 20: esperava um tipo (INT, REAL, TEXT ou BOOLEAN), veio "FLOAT"
 my_dbms> SELECT * FROM pessoas WHERE idade = 'trinta';
 erro: WHERE: esperava um valor INT, veio 'trinta'
 my_dbms> INSERT INTO pessoas (id, cidade) VALUES (8, 'Natal');
@@ -117,14 +142,18 @@ texto ──► sql.Lex() ──► parser.Parse() ──► execute() ──►
 2. **Parser** (`internal/parser`): um parser descendente recursivo monta a
    árvore do comando, com a precedência do SQL.
 3. **Execução** (`cmd/my_dbms`): confere colunas e tipos contra o schema antes
-   de ler qualquer linha e avalia o `WHERE` com a lógica de três valores.
+   de ler qualquer linha, escolhe entre um índice e a varredura completa e
+   avalia o `WHERE` com a lógica de três valores.
 4. **Storage** (`internal/storage`): guarda cada tabela em
-   `data/<tabela>.marina`, num formato binário próprio dividido em páginas
+   `data/<tabela>.mari`, num formato binário próprio dividido em páginas
    de tamanho fixo (slotted pages, como no SQLite e no PostgreSQL). INT é
-   gravado como int64, TEXT com o tamanho na frente e NULL num bitmap. O
-   catálogo `data/_catalog.marina` descreve colunas e chaves, no mesmo
-   formato. Toda escrita grava num arquivo temporário e renomeia por cima do
-   original, para a tabela não corromper se o processo cair no meio.
+   gravado como int64, REAL como float64, BOOLEAN num byte, TEXT com o
+   tamanho na frente e NULL num bitmap. O
+   catálogo `data/_catalog.mari` descreve colunas, chaves e índices, no
+   mesmo formato. Cada linha tem um endereço fixo (página, slot), que é o
+   que os índices B+tree guardam, cada um no seu arquivo. Cada comando é uma
+   transação: as páginas alteradas ficam na memória e o commit passa por um
+   rollback journal, então uma queda no meio não corrompe nada.
 
 A pasta dos dados e o tamanho da página vêm do `my_dbms.conf`
 (`data_dir = data`, `page_size = 4096`).
@@ -145,11 +174,11 @@ Os commits seguem o Conventional Commits, em inglês: veja
 
 ## Próximos passos
 
-- gravar só a página que mudou, com um journal contra quedas
+- `ORDER BY` e `LIMIT`, aproveitando a ordem do índice
 - páginas de overflow para registros maiores que uma página
-- índice B-tree
-- WAL e transações
-- um planner simples, que escolha entre índice e varredura completa
+- um mapa de espaço livre, para o `INSERT` reaproveitar páginas antigas
+- `BEGIN`/`COMMIT` com vários comandos numa transação, e depois WAL e MVCC
+- `JOIN`
 
 ## Licença
 

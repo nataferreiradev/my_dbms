@@ -82,7 +82,7 @@ refactor(sql): replace parser interfaces with plain functions
 ```
 feat(storage)!: store rows as length-prefixed records
 
-BREAKING CHANGE: .marina files created by older versions can't be read.
+BREAKING CHANGE: .mari files created by older versions can't be read.
 ```
 
 ## Regras gerais

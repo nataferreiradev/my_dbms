@@ -32,7 +32,11 @@ var keywords = map[string]bool{
 	"INTO":    true,
 	"VALUES":  true,
 	"INT":     true,
+	"REAL":    true,
 	"TEXT":    true,
+	"BOOLEAN": true,
+	"TRUE":    true,
+	"FALSE":   true,
 	"PRIMARY": true,
 	"KEY":     true,
 	"UNIQUE":  true,
@@ -43,6 +47,9 @@ var keywords = map[string]bool{
 	"UPDATE":  true,
 	"SET":     true,
 	"DROP":    true,
+	"INDEX":   true,
+	"ON":      true,
+	"EXPLAIN": true,
 }
 
 var operators = map[string]bool{

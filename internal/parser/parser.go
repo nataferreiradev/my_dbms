@@ -18,24 +18,7 @@ func Parse(tokens []sql.Token) (Statement, error) {
 	}
 
 	p := &parser{tokens: tokens}
-	var stmt Statement
-	var err error
-	switch tokens[0].Value {
-	case "CREATE":
-		stmt, err = p.createTable()
-	case "INSERT":
-		stmt, err = p.insert()
-	case "SELECT":
-		stmt, err = p.selectStmt()
-	case "UPDATE":
-		stmt, err = p.update()
-	case "DELETE":
-		stmt, err = p.delete()
-	case "DROP":
-		stmt, err = p.dropTable()
-	default:
-		return nil, fmt.Errorf("comando não suportado: %s", tokens[0].Value)
-	}
+	stmt, err := p.statement()
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +26,34 @@ func Parse(tokens []sql.Token) (Statement, error) {
 		return nil, p.unexpected("o fim do comando")
 	}
 	return stmt, nil
+}
+
+// statement escolhe a regra pelo primeiro token (e o segundo, quando o
+// primeiro não basta).
+func (p *parser) statement() (Statement, error) {
+	switch p.peek().Value {
+	case "CREATE":
+		if p.peekAt(1).Value == "INDEX" {
+			return p.createIndex()
+		}
+		return p.createTable()
+	case "INSERT":
+		return p.insert()
+	case "SELECT":
+		return p.selectStmt()
+	case "UPDATE":
+		return p.update()
+	case "DELETE":
+		return p.delete()
+	case "DROP":
+		if p.peekAt(1).Value == "INDEX" {
+			return p.dropIndex()
+		}
+		return p.dropTable()
+	case "EXPLAIN":
+		return p.explain()
+	}
+	return nil, fmt.Errorf("comando não suportado: %s", p.peek().Value)
 }
 
 type parser struct {
@@ -87,8 +98,8 @@ func (p *parser) columnDef(stmt *CreateTable) error {
 		return err
 	}
 	typ := p.peek().Value
-	if !p.accept("INT") && !p.accept("TEXT") {
-		return p.unexpected("um tipo (INT ou TEXT)")
+	if !p.accept("INT") && !p.accept("REAL") && !p.accept("TEXT") && !p.accept("BOOLEAN") {
+		return p.unexpected("um tipo (INT, REAL, TEXT ou BOOLEAN)")
 	}
 	col := ColumnDef{Name: name, Type: typ}
 
@@ -249,6 +260,55 @@ func (p *parser) dropTable() (*DropTable, error) {
 	return &DropTable{Name: name}, err
 }
 
+// createIndex lê CREATE INDEX nome ON tabela (a, b).
+func (p *parser) createIndex() (*CreateIndex, error) {
+	if err := p.expect("CREATE", "INDEX"); err != nil {
+		return nil, err
+	}
+	name, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect("ON"); err != nil {
+		return nil, err
+	}
+	table, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	columns, err := p.names()
+	return &CreateIndex{Name: name, Table: table, Columns: columns}, err
+}
+
+// dropIndex lê DROP INDEX nome.
+func (p *parser) dropIndex() (*DropIndex, error) {
+	if err := p.expect("DROP", "INDEX"); err != nil {
+		return nil, err
+	}
+	name, err := p.ident()
+	return &DropIndex{Name: name}, err
+}
+
+// explain lê EXPLAIN seguido de SELECT, UPDATE ou DELETE.
+func (p *parser) explain() (*Explain, error) {
+	if err := p.expect("EXPLAIN"); err != nil {
+		return nil, err
+	}
+	var stmt Statement
+	var err error
+	switch p.peek().Value {
+	case "SELECT":
+		stmt, err = p.selectStmt()
+	case "UPDATE":
+		stmt, err = p.update()
+	case "DELETE":
+		stmt, err = p.delete()
+	default:
+		return nil, p.unexpected("SELECT, UPDATE ou DELETE")
+	}
+	return &Explain{Statement: stmt}, err
+}
+
 // where lê "WHERE condição", se vier. A precedência é a do SQL: OR liga mais
 // fraco que AND, que liga mais fraco que as comparações, então
 // "a = 1 OR b = 2 AND c = 3" é "a = 1 OR (b = 2 AND c = 3)".
@@ -328,7 +388,7 @@ func (p *parser) operand() (Expr, error) {
 	return lit, nil
 }
 
-// literal lê um número, uma string ou NULL.
+// literal lê um número, uma string, TRUE, FALSE ou NULL.
 func (p *parser) literal() (Literal, error) {
 	t := p.peek()
 	switch {
@@ -338,6 +398,10 @@ func (p *parser) literal() (Literal, error) {
 	case t.Type == sql.String:
 		p.pos++
 		return Literal{Kind: String, Text: t.Value}, nil
+	case p.accept("TRUE"):
+		return Literal{Kind: Bool, Text: "TRUE"}, nil
+	case p.accept("FALSE"):
+		return Literal{Kind: Bool, Text: "FALSE"}, nil
 	case p.accept("NULL"):
 		return Literal{Kind: Null, Text: "NULL"}, nil
 	}
@@ -379,10 +443,15 @@ func (p *parser) done() bool {
 
 // peek devolve o token atual sem consumir. No fim, um token vazio.
 func (p *parser) peek() sql.Token {
-	if p.done() {
+	return p.peekAt(0)
+}
+
+// peekAt devolve o token k posições depois do atual, sem consumir.
+func (p *parser) peekAt(k int) sql.Token {
+	if p.pos+k >= len(p.tokens) {
 		return sql.Token{}
 	}
-	return p.tokens[p.pos]
+	return p.tokens[p.pos+k]
 }
 
 // accept consome o token atual se ele for a keyword, o símbolo ou o operador

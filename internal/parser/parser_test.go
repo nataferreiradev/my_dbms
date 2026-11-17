@@ -63,6 +63,27 @@ func TestParse(t *testing.T) {
 			}}},
 		},
 		{
+			input: "CREATE TABLE t (preco REAL NOT NULL, ativo BOOLEAN)",
+			want: &CreateTable{
+				Name: "t",
+				Columns: []ColumnDef{
+					{Name: "preco", Type: "REAL", NotNull: true},
+					{Name: "ativo", Type: "BOOLEAN"},
+				},
+			},
+		},
+		{
+			input: "INSERT INTO t VALUES (true, FALSE)",
+			want: &Insert{Table: "t", Rows: [][]Literal{{
+				{Kind: Bool, Text: "TRUE"},
+				{Kind: Bool, Text: "FALSE"},
+			}}},
+		},
+		{
+			input: "SELECT * FROM t WHERE ativo = TRUE",
+			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"ativo"}, Right: Literal{Bool, "TRUE"}}},
+		},
+		{
 			input: `INSERT INTO t (nome, id) VALUES ('Ana', 1), ('Bia', 2)`,
 			want: &Insert{Table: "t", Columns: []string{"nome", "id"}, Rows: [][]Literal{
 				{{Kind: String, Text: "Ana"}, {Kind: Number, Text: "1"}},
@@ -141,6 +162,16 @@ func TestParse(t *testing.T) {
 				Right: &Comparison{Op: "=", Left: ColumnRef{"c"}, Right: Literal{Number, "3"}},
 			}},
 		},
+		{
+			input: "CREATE INDEX t_nome ON t (nome, id);",
+			want:  &CreateIndex{Name: "t_nome", Table: "t", Columns: []string{"nome", "id"}},
+		},
+		{input: "DROP INDEX t_nome", want: &DropIndex{Name: "t_nome"}},
+		{
+			input: "EXPLAIN SELECT * FROM t WHERE id = 1",
+			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "1"}}}},
+		},
+		{input: "explain delete from t", want: &Explain{Statement: &Delete{Table: "t"}}},
 	}
 
 	for _, tt := range tests {
@@ -164,7 +195,7 @@ func TestParseErrors(t *testing.T) {
 		{input: ";", wantErr: "comando vazio"},
 		{input: "DESTROY t", wantErr: "não suportado"},
 		{input: "CREATE TABLE t;", wantErr: `esperava "(", mas o comando acabou`},
-		{input: "CREATE TABLE t (id FLOAT)", wantErr: `posição 20: esperava um tipo (INT ou TEXT), veio "FLOAT"`},
+		{input: "CREATE TABLE t (id FLOAT)", wantErr: `posição 20: esperava um tipo (INT, REAL, TEXT ou BOOLEAN), veio "FLOAT"`},
 		{input: "CREATE TABLE t (id INT nome TEXT)", wantErr: `esperava "," ou ")"`},
 		{input: "CREATE TABLE t (id INT PRIMARY)", wantErr: `esperava "KEY"`},
 		{input: "CREATE TABLE t (id INT NOT)", wantErr: `esperava "NULL"`},
@@ -195,6 +226,12 @@ func TestParseErrors(t *testing.T) {
 		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
 		{input: "DROP t", wantErr: `esperava "TABLE"`},
 		{input: "DROP TABLE t, u", wantErr: "esperava o fim do comando"},
+		{input: "CREATE INDEX i t (a)", wantErr: `esperava "ON"`},
+		{input: "CREATE INDEX i ON t", wantErr: `esperava "("`},
+		{input: "CREATE INDEX ON t (a)", wantErr: "esperava um nome"},
+		{input: "DROP INDEX", wantErr: "esperava um nome"},
+		{input: "EXPLAIN", wantErr: "esperava SELECT, UPDATE ou DELETE"},
+		{input: "EXPLAIN DROP TABLE t", wantErr: "esperava SELECT, UPDATE ou DELETE"},
 	}
 
 	for _, tt := range tests {
@@ -205,4 +242,33 @@ func TestParseErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FuzzParse confere que nenhum comando derruba o parser: ou sai uma AST, ou
+// um erro.
+// Rode com: go test ./internal/parser -fuzz FuzzParse
+func FuzzParse(f *testing.F) {
+	for _, s := range []string{
+		"CREATE TABLE p (id INT PRIMARY KEY, nome TEXT NOT NULL, UNIQUE (nome));",
+		"INSERT INTO p (nome, id) VALUES ('a', 1), ('b', 2);",
+		"SELECT a, b FROM p WHERE (a > 1 OR b IS NULL) AND a <> 3;",
+		"UPDATE p SET a = 1, b = NULL WHERE a = 2",
+		"DELETE FROM p",
+		"DROP TABLE p;",
+		"CREATE INDEX i ON p (a, b);",
+		"DROP INDEX i",
+		"EXPLAIN SELECT * FROM p WHERE a >= 1 AND a < 9",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		tokens, err := sql.Lex(input)
+		if err != nil {
+			return
+		}
+		stmt, err := Parse(tokens)
+		if err == nil && stmt == nil {
+			t.Errorf("Parse(%q) sem erro e sem comando", input)
+		}
+	})
 }

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"my_DBMS/internal/parser"
 	"my_DBMS/internal/storage"
 )
 
@@ -124,6 +127,51 @@ func TestNull(t *testing.T) {
 		{input: "INSERT INTO p VALUES (NULL, 'Caio', 'y');", wantErr: true},
 		{input: "INSERT INTO p VALUES (4, 'Dani', 'NULL');", want: "1 linha inserida"},
 		{input: "SELECT apelido FROM p;", want: "apelido\n-------\nNULL\nNULL\nNULL\n(3 linhas)"},
+	}
+
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
+func TestRealAndBoolean(t *testing.T) {
+	db, err := storage.Open(t.TempDir(), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "CREATE TABLE p (id INT PRIMARY KEY, preco REAL UNIQUE, ativo BOOLEAN NOT NULL);", want: "tabela p criada"},
+		{input: "INSERT INTO p VALUES (1, 10.50, TRUE), (2, 2, false), (3, -0.25, TRUE), (4, NULL, FALSE);", want: "4 linhas inseridas"},
+		{input: "SELECT * FROM p;", want: "id | preco | ativo\n---+-------+------\n 1 |  10.5 | TRUE\n 2 |     2 | FALSE\n 3 | -0.25 | TRUE\n 4 |  NULL | FALSE\n(4 linhas)"},
+		// REAL compara como número: 10.5 > 2, mesmo com "10.5" < "2" como texto.
+		{input: "SELECT id FROM p WHERE preco > 1.5;", want: "id\n--\n 2\n 1\n(2 linhas)"},
+		{input: "SELECT id FROM p WHERE ativo = TRUE;", want: "id\n--\n 1\n 3\n(2 linhas)"},
+		{input: "SELECT id FROM p WHERE ativo < TRUE;", want: "id\n--\n 2\n 4\n(2 linhas)"},
+		{input: "INSERT INTO p VALUES (5, 10.5, TRUE);", wantErr: true},
+		// -0.0 e 0 são o mesmo valor para a chave UNIQUE.
+		{input: "INSERT INTO p VALUES (5, 0, TRUE), (6, -0.0, TRUE);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 'x', TRUE);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 1.5, 1);", wantErr: true},
+		{input: "INSERT INTO p VALUES (7, 1.5, 'TRUE');", wantErr: true},
+		{input: "INSERT INTO p VALUES (7.5, 1.5, TRUE);", wantErr: true},
+		{input: "SELECT id FROM p WHERE ativo = 1;", wantErr: true},
+		{input: "SELECT id FROM p WHERE preco = TRUE;", wantErr: true},
+		{input: "UPDATE p SET ativo = FALSE, preco = 99.9 WHERE id = 1;", want: "1 linha atualizada"},
+		{input: "CREATE INDEX p_ativo_preco ON p (ativo, preco);", want: "índice p_ativo_preco criado"},
+		{input: "EXPLAIN SELECT * FROM p WHERE ativo = FALSE AND preco > 50;", want: "busca no índice p_ativo_preco da tabela p (ativo = FALSE AND preco > 50)"},
+		{input: "SELECT id, preco FROM p WHERE ativo = FALSE AND preco > 50;", want: "id | preco\n---+------\n 1 |  99.9\n(1 linha)"},
+		{input: "SELECT definition FROM _catalog WHERE name = 'p';", want: "definition\n-------------------------------------------------\nid INT NOT NULL,preco REAL,ativo BOOLEAN NOT NULL\n(1 linha)"},
 	}
 
 	for _, s := range steps {
@@ -334,4 +382,123 @@ func TestInsertInvalid(t *testing.T) {
 			t.Errorf("execute(%q) deveria falhar", input)
 		}
 	}
+}
+
+func TestIndexes(t *testing.T) {
+	db, err := storage.Open(t.TempDir(), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := []string{
+		"CREATE TABLE p (id INT PRIMARY KEY, nome TEXT, idade INT, cidade TEXT);",
+		"INSERT INTO p VALUES (1, 'Ana', 30, 'Recife'), (2, 'Bia', 25, 'Natal'), (3, 'Caio', 30, 'Natal'), (4, NULL, 41, 'Recife');",
+	}
+	for _, s := range setup {
+		if _, err := execute(db, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "EXPLAIN SELECT * FROM p WHERE id = 2", want: "busca no índice p_pkey da tabela p (id = 2)"},
+		{input: "EXPLAIN SELECT * FROM p WHERE 2 < id AND nome <> 'x'", want: "busca no índice p_pkey da tabela p (id > 2)"},
+		{input: "EXPLAIN SELECT * FROM p WHERE id = 2 OR id = 3", want: "varredura completa na tabela p"},
+		{input: "EXPLAIN SELECT * FROM p WHERE idade = 30", want: "varredura completa na tabela p"},
+		{input: "EXPLAIN SELECT * FROM p WHERE idade = 30 AND idade = 'x'", wantErr: true},
+		{input: "CREATE INDEX p_idade ON p (idade, cidade);", want: "índice p_idade criado"},
+		{input: "EXPLAIN SELECT * FROM p WHERE idade = 30", want: "busca no índice p_idade da tabela p (idade = 30)"},
+		{input: "EXPLAIN SELECT * FROM p WHERE idade >= 30 AND idade < 40", want: "busca no índice p_idade da tabela p (idade >= 30 AND idade < 40)"},
+		{input: "EXPLAIN DELETE FROM p WHERE cidade = 'Natal' AND idade = 30", want: "busca no índice p_idade da tabela p (idade = 30 AND cidade = 'Natal')"},
+		{input: "EXPLAIN UPDATE p SET nome = 'x' WHERE id = 1 AND idade = 30", want: "busca no índice p_pkey da tabela p (id = 1)"},
+		// Pelo índice, as linhas saem na ordem da chave (idade, cidade).
+		{input: "SELECT nome FROM p WHERE idade = 30", want: "nome\n----\nCaio\nAna\n(2 linhas)"},
+		{input: "SELECT nome FROM p WHERE idade >= 30 AND idade < 40 AND nome IS NOT NULL", want: "nome\n----\nCaio\nAna\n(2 linhas)"},
+		{input: "UPDATE p SET idade = 31 WHERE idade = 30 AND cidade = 'Natal'", want: "1 linha atualizada"},
+		{input: "SELECT id FROM p WHERE idade = 31", want: "id\n--\n 3\n(1 linha)"},
+		{input: "DELETE FROM p WHERE idade > 30", want: "2 linhas removidas"},
+		{input: "SELECT id FROM p WHERE idade >= 0", want: "id\n--\n 2\n 1\n(2 linhas)"},
+		{input: "SELECT name, table_name, type, columns FROM _indexes", want: "name    | table_name | type        | columns\n--------+------------+-------------+-------------\np_pkey  | p          | primary_key | id\np_idade | p          | index       | idade,cidade\n(2 linhas)"},
+		{input: "CREATE INDEX p_idade ON p (nome);", wantErr: true},
+		{input: "DROP INDEX p_pkey;", wantErr: true},
+		{input: "DROP INDEX p_idade;", want: "índice p_idade removido"},
+		{input: "EXPLAIN SELECT * FROM p WHERE idade = 30", want: "varredura completa na tabela p"},
+		{input: "INSERT INTO p VALUES (2, 'Duda', 20, 'Natal');", wantErr: true},
+	}
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if (err != nil) != s.wantErr {
+			t.Fatalf("execute(%q) erro = %v, wantErr %v", s.input, err, s.wantErr)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
+
+// TestIndexMatchesFullScan confere que o SELECT pelo índice devolve as mesmas
+// linhas que a varredura completa, para várias condições.
+func TestIndexMatchesFullScan(t *testing.T) {
+	withIndex, _ := storage.Open(t.TempDir(), 1024)
+	without, _ := storage.Open(t.TempDir(), 1024)
+	for _, db := range []*storage.DB{withIndex, without} {
+		execute(db, "CREATE TABLE t (a INT, b TEXT, c INT);")
+		var values []string
+		for i := range 300 {
+			b := fmt.Sprintf("'%c'", 'a'+i%5)
+			if i%11 == 0 {
+				b = "NULL"
+			}
+			values = append(values, fmt.Sprintf("(%d, %s, %d)", (i*7)%50-10, b, i))
+		}
+		if _, err := execute(db, "INSERT INTO t VALUES "+strings.Join(values, ", ")+";"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := execute(withIndex, "CREATE INDEX t_a_b ON t (a, b);"); err != nil {
+		t.Fatal(err)
+	}
+
+	wheres := []string{
+		"a = 3", "a = -10", "a = 100", "a > 30", "a >= 30", "a < -5", "a <= -5",
+		"a >= 0 AND a < 10", "10 > a AND a > 0", "a = 3 AND b = 'c'", "a = 3 AND b >= 'b'",
+		"a = 3 AND b IS NULL", "a = 3 AND c > 100", "b = 'a'", "a = 3 OR a = 4",
+	}
+	for _, w := range wheres {
+		query := "SELECT c FROM t WHERE " + w + ";"
+		got, err := querySelect(withIndex, mustSelect(t, query))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := querySelect(without, mustSelect(t, query))
+		if !sameCells(got.Rows, want.Rows) {
+			t.Errorf("%s: com índice %d linhas, sem índice %d", w, len(got.Rows), len(want.Rows))
+		}
+	}
+}
+
+func mustSelect(t *testing.T, input string) *parser.Select {
+	t.Helper()
+	stmt, err := parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stmt.(*parser.Select)
+}
+
+// sameCells compara linhas sem olhar a ordem: sem ORDER BY, a ordem do
+// índice e a da tabela podem ser diferentes.
+func sameCells(a, b [][]storage.Value) bool {
+	key := func(rows [][]storage.Value) []string {
+		var keys []string
+		for _, r := range rows {
+			keys = append(keys, fmt.Sprint(r))
+		}
+		slices.Sort(keys)
+		return keys
+	}
+	return slices.Equal(key(a), key(b))
 }

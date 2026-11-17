@@ -4,14 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
 const (
-	tableExtension = ".marina"
+	tableExtension = ".mari"
 	catalogName    = "_catalog"
 	kindTable      = "table"
 )
@@ -25,9 +27,13 @@ var catalogSchema = Schema{Columns: []Column{
 	{Name: "definition", Type: "TEXT"},
 }}
 
-// DB guarda cada tabela como um arquivo de páginas dentro de dir, só com os
-// registros (o formato está em page.go). O que descreve os objetos do banco
-// fica no catálogo (_catalog.marina), que é carregado para a memória no Open.
+// DB guarda cada tabela e cada índice como um arquivo de páginas dentro de
+// dir (o formato está em page.go). O que descreve os objetos do banco fica no
+// catálogo (_catalog.mari), que é carregado para a memória no Open.
+//
+// Toda operação roda numa transação (tx.go): ou grava tudo, ou nada. Várias
+// leituras podem rodar ao mesmo tempo, mas uma escrita precisa rodar
+// sozinha; quem chama garante isso.
 type DB struct {
 	dir      string
 	pageSize int
@@ -55,36 +61,65 @@ func Text(s string) Value {
 	return Value{Text: s}
 }
 
-// KeyKind diz que tipo de chave é. O valor é o que vai na coluna type do
+// columnTypes são os tipos de coluna que o banco conhece.
+var columnTypes = []string{"INT", "REAL", "TEXT", "BOOLEAN"}
+
+// FormatReal escreve um REAL como ele fica guardado no Value: sem expoente
+// ("1500", "0.25") e com o menor número de dígitos que volta ao mesmo
+// float64. O -0 vira 0, para os dois não serem valores diferentes numa chave.
+func FormatReal(f float64) string {
+	if f == 0 {
+		f = 0
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// IndexKind diz que tipo de índice é. O valor é o que vai na coluna type do
 // catálogo.
-type KeyKind string
+type IndexKind string
 
 const (
-	PrimaryKey KeyKind = "primary_key"
-	Unique     KeyKind = "unique"
+	PrimaryKey IndexKind = "primary_key" // chave primária: única e NOT NULL
+	Unique     IndexKind = "unique"      // chave única
+	PlainIndex IndexKind = "index"       // índice criado com CREATE INDEX
 )
 
-// Key é uma restrição de unicidade sobre uma ou mais colunas. O Name é
-// gerado pelo CreateTable: <tabela>_pkey ou <tabela>_<colunas>_key.
-type Key struct {
+// Index é um índice B+tree sobre uma ou mais colunas, guardado no arquivo
+// <Name>.mari. Toda chave (PRIMARY KEY ou UNIQUE) tem um índice, que é o que
+// confere a unicidade. O Name das chaves é gerado pelo CreateTable:
+// <tabela>_pkey ou <tabela>_<colunas>_key.
+type Index struct {
 	Name    string
-	Kind    KeyKind
+	Kind    IndexKind
 	Columns []string
+}
+
+// Unique diz se o índice impede valores repetidos.
+func (i Index) Unique() bool {
+	return i.Kind != PlainIndex
 }
 
 type Schema struct {
 	Columns []Column
-	Keys    []Key
+	Indexes []Index
+}
+
+// Row é uma linha lida de uma tabela, com o endereço dela.
+type Row struct {
+	RID    RID
+	Values []Value
 }
 
 type Table struct {
 	Schema
 	Rows [][]Value
+	RIDs []RID // RIDs[i] é o endereço de Rows[i]
 }
 
 // Open abre o banco em dir. Num banco novo, cria a pasta e o catálogo vazio.
 // O pageSize vale para o banco inteiro e fica gravado nos arquivos: abrir um
-// banco existente com outro valor é erro.
+// banco existente com outro valor é erro. Se um commit ficou pela metade
+// (o programa caiu no meio), ele é desfeito aqui.
 func Open(dir string, pageSize int) (*DB, error) {
 	if err := checkPageSize(pageSize); err != nil {
 		return nil, err
@@ -92,23 +127,33 @@ func Open(dir string, pageSize int) (*DB, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
+	if err := recoverJournal(dir, pageSize); err != nil {
+		return nil, err
+	}
 	db := &DB{dir: dir, pageSize: pageSize, tables: map[string]Schema{
 		catalogName:  catalogSchema,
 		settingsName: settingsSchema,
 		tablesName:   tablesSchema,
+		indexesName:  indexesSchema,
 	}}
 
 	path := db.tablePath(catalogName)
-	data, err := os.ReadFile(path)
+	data := make([]byte, 8)
+	f, err := os.Open(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		// Banco novo: começa com o catálogo vazio.
-		if err := writePages(path, pageSize, nil); err != nil {
+		if err := createFile(path, pageSize); err != nil {
 			return nil, err
 		}
 	case err != nil:
 		return nil, err
 	default:
+		_, err := f.Read(data)
+		f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("catálogo %s: %w", path, err)
+		}
 		size, err := readHeader(data)
 		if err != nil {
 			return nil, fmt.Errorf("catálogo %s: %w", path, err)
@@ -130,43 +175,48 @@ func Open(dir string, pageSize int) (*DB, error) {
 //	type        | name       | table_name | definition
 //	table       | users      | users      | id INT,nome TEXT
 //	primary_key | users_pkey | users      | id
+//	index       | users_nome | users      | nome
 //
-// Uma chave sempre vem depois da linha da tabela dela.
+// Um índice sempre vem depois da linha da tabela dele.
 func (db *DB) loadCatalog() error {
-	rows, err := db.readRows(catalogName, catalogSchema.Columns)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
+	t := db.begin()
+	defer t.close()
+	return t.scanRecords(catalogName, func(_ RID, rec []byte) (bool, error) {
+		row, err := decodeRecord(catalogSchema.Columns, rec)
+		if err != nil {
+			return false, fmt.Errorf("catálogo corrompido: %w", err)
+		}
 		kind, name, tableName, def := row[0].Text, row[1].Text, row[2].Text, row[3].Text
 		switch kind {
 		case kindTable:
 			columns, err := parseColumns(def)
 			if err != nil {
-				return fmt.Errorf("catálogo, tabela %q: %w", name, err)
+				return false, fmt.Errorf("catálogo, tabela %q: %w", name, err)
 			}
 			db.tables[name] = Schema{Columns: columns}
-		case string(PrimaryKey), string(Unique):
+		case string(PrimaryKey), string(Unique), string(PlainIndex):
 			schema, ok := db.tables[tableName]
 			if !ok {
-				return fmt.Errorf("catálogo corrompido: chave %q aponta para a tabela %q, que não existe", name, tableName)
+				return false, fmt.Errorf("catálogo corrompido: índice %q aponta para a tabela %q, que não existe", name, tableName)
 			}
-			key := Key{Name: name, Kind: KeyKind(kind), Columns: strings.Split(def, ",")}
-			for _, c := range key.Columns {
+			idx := Index{Name: name, Kind: IndexKind(kind), Columns: strings.Split(def, ",")}
+			for _, c := range idx.Columns {
 				if columnIndex(schema.Columns, c) < 0 {
-					return fmt.Errorf("catálogo corrompido: chave %q usa a coluna %q, que não existe", name, c)
+					return false, fmt.Errorf("catálogo corrompido: índice %q usa a coluna %q, que não existe", name, c)
 				}
 			}
-			schema.Keys = append(schema.Keys, key)
+			schema.Indexes = append(schema.Indexes, idx)
 			db.tables[tableName] = schema
 		default:
-			return fmt.Errorf("catálogo corrompido: tipo de objeto %q desconhecido", kind)
+			return false, fmt.Errorf("catálogo corrompido: tipo de objeto %q desconhecido", kind)
 		}
-	}
-	return nil
+		return true, nil
+	})
 }
 
-func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
+// CreateTable cria a tabela e um índice para cada chave (PRIMARY KEY ou
+// UNIQUE) em keys. O Name das chaves é preenchido aqui.
+func (db *DB) CreateTable(name string, columns []Column, keys []Index) error {
 	if name == "" {
 		return errors.New("nome da tabela não pode ser vazio")
 	}
@@ -175,6 +225,9 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 	}
 	if _, ok := db.tables[name]; ok {
 		return fmt.Errorf("tabela %q já existe", name)
+	}
+	if table, ok := db.indexTable(name); ok {
+		return fmt.Errorf("já existe um índice %q (da tabela %s)", name, table)
 	}
 	if len(columns) == 0 {
 		return errors.New("tabela precisa de pelo menos uma coluna")
@@ -186,13 +239,18 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 			return fmt.Errorf("coluna %q repetida", c.Name)
 		}
 		seen[c.Name] = true
-		if c.Type != "INT" && c.Type != "TEXT" {
-			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT ou TEXT)", c.Name, c.Type)
+		if !slices.Contains(columnTypes, c.Type) {
+			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT, REAL, TEXT ou BOOLEAN)", c.Name, c.Type)
 		}
 	}
 	keys, err := nameKeys(name, columns, keys)
 	if err != nil {
 		return err
+	}
+	for _, k := range keys {
+		if db.nameInUse(k.Name) {
+			return fmt.Errorf("o nome %q da chave já é usado por outra tabela ou índice", k.Name)
+		}
 	}
 	// Coluna de chave primária nunca é NULL, como no SQL padrão.
 	columns = slices.Clone(columns)
@@ -204,31 +262,49 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Key) error {
 		}
 	}
 
-	// Primeiro o arquivo de dados, depois o catálogo: se algo falhar no meio,
-	// sobra no máximo um arquivo que o catálogo não enxerga.
-	path := db.tablePath(name)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	// Primeiro os arquivos, depois o catálogo: se algo falhar no meio, sobram
+	// no máximo arquivos que o catálogo não enxerga.
+	var created []string
+	removeCreated := func() {
+		for _, n := range created {
+			os.Remove(db.tablePath(n))
+		}
+	}
+	err = createFile(db.tablePath(name), db.pageSize)
 	if errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("o arquivo %s já existe, mas não está no catálogo", path)
+		return fmt.Errorf("o arquivo %s já existe, mas não está no catálogo", db.tablePath(name))
 	}
 	if err != nil {
 		return err
 	}
-	file.Close()
-	if err := writePages(path, db.pageSize, nil); err != nil {
-		os.Remove(path)
-		return err
+	created = append(created, name)
+	for _, k := range keys {
+		err := db.newIndexFile(k.Name)
+		if errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("o arquivo %s já existe, mas não está no catálogo", db.tablePath(k.Name))
+		}
+		if err != nil {
+			removeCreated()
+			return err
+		}
+		created = append(created, k.Name)
 	}
 
+	t := db.begin()
+	defer t.close()
 	records := [][]Value{catalogRow(kindTable, name, name, formatColumns(columns))}
 	for _, k := range keys {
 		records = append(records, catalogRow(string(k.Kind), k.Name, name, strings.Join(k.Columns, ",")))
 	}
-	if err := db.appendRows(catalogName, catalogSchema.Columns, records); err != nil {
-		os.Remove(path)
+	if err := t.appendCatalog(records...); err != nil {
+		removeCreated()
 		return err
 	}
-	db.tables[name] = Schema{Columns: columns, Keys: keys}
+	if err := t.commit(); err != nil {
+		removeCreated()
+		return err
+	}
+	db.tables[name] = Schema{Columns: columns, Indexes: keys}
 	return nil
 }
 
@@ -237,10 +313,48 @@ func catalogRow(kind, name, table, def string) []Value {
 	return []Value{Text(kind), Text(name), Text(table), Text(def)}
 }
 
+// appendCatalog acrescenta linhas ao catálogo.
+func (t *tx) appendCatalog(rows ...[]Value) error {
+	for _, row := range rows {
+		rec, err := encodeRecord(catalogSchema.Columns, row)
+		if err != nil {
+			return err
+		}
+		if _, err := t.insertRecord(catalogName, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteCatalog apaga as linhas do catálogo para as quais drop diz true.
+func (t *tx) deleteCatalog(drop func(row []Value) bool) error {
+	var rids []RID
+	err := t.scanRecords(catalogName, func(rid RID, rec []byte) (bool, error) {
+		row, err := decodeRecord(catalogSchema.Columns, rec)
+		if err != nil {
+			return false, err
+		}
+		if drop(row) {
+			rids = append(rids, rid)
+		}
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, rid := range rids {
+		if err := t.deleteRecord(catalogName, rid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // nameKeys confere as chaves da tabela e devolve uma cópia com o Name de
 // cada uma preenchido.
-func nameKeys(table string, columns []Column, keys []Key) ([]Key, error) {
-	named := make([]Key, len(keys))
+func nameKeys(table string, columns []Column, keys []Index) ([]Index, error) {
+	named := make([]Index, len(keys))
 	seen := map[string]bool{}
 	for i, k := range keys {
 		if len(k.Columns) == 0 {
@@ -272,12 +386,13 @@ func nameKeys(table string, columns []Column, keys []Key) ([]Key, error) {
 			return nil, fmt.Errorf("chave UNIQUE (%s) repetida", strings.Join(k.Columns, ", "))
 		}
 		seen[k.Name] = true
+		k.Columns = slices.Clone(k.Columns)
 		named[i] = k
 	}
 	return named, nil
 }
 
-// TableSchema devolve as colunas e chaves da tabela, sem ler os registros.
+// TableSchema devolve as colunas e índices da tabela, sem ler os registros.
 func (db *DB) TableSchema(name string) (Schema, error) {
 	schema, ok := db.tables[name]
 	if !ok {
@@ -291,14 +406,19 @@ func (s Schema) ColumnIndex(name string) int {
 	return columnIndex(s.Columns, name)
 }
 
-// InsertRows acrescenta registros no fim da tabela: ou entram todos, ou
-// nenhum. Os tipos dos valores já devem estar validados; NOT NULL e chaves
-// são conferidos aqui.
-func (db *DB) InsertRows(name string, rows [][]Value) error {
+// writableSchema devolve o schema de uma tabela que aceita escrita.
+func (db *DB) writableSchema(name string) (Schema, error) {
 	if isSystem(name) {
-		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
+		return Schema{}, fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
 	}
-	schema, err := db.TableSchema(name)
+	return db.TableSchema(name)
+}
+
+// InsertRows acrescenta registros à tabela: ou entram todos, ou nenhum. Os
+// tipos dos valores já devem estar validados; NOT NULL e chaves são
+// conferidos aqui.
+func (db *DB) InsertRows(name string, rows [][]Value) error {
+	schema, err := db.writableSchema(name)
 	if err != nil {
 		return err
 	}
@@ -306,62 +426,150 @@ func (db *DB) InsertRows(name string, rows [][]Value) error {
 		return err
 	}
 
-	if len(schema.Keys) > 0 {
-		existing, err := db.readRows(name, schema.Columns)
+	t := db.begin()
+	defer t.close()
+	for _, row := range rows {
+		rec, err := encodeRecord(schema.Columns, row)
 		if err != nil {
 			return err
 		}
-		if err := checkKeys(schema, append(existing, rows...)); err != nil {
+		if err := t.checkUnique(schema, row); err != nil {
+			return err
+		}
+		rid, err := t.insertRecord(name, rec)
+		if err != nil {
+			return err
+		}
+		if err := t.addToIndexes(schema, rid, row); err != nil {
 			return err
 		}
 	}
-	return db.appendRows(name, schema.Columns, rows)
+	return t.commit()
 }
 
-// ReplaceRows troca todos os registros da tabela por rows. É o que DELETE e
-// UPDATE usam: leem a tabela, mudam na memória e gravam de volta. NOT NULL e
-// chaves são conferidos antes de gravar.
-func (db *DB) ReplaceRows(name string, rows [][]Value) error {
-	if isSystem(name) {
-		return fmt.Errorf("tabela %q é do sistema e só pode ser lida", name)
+// UpdateRows troca as linhas dos endereços rids pelas de rows (rows[i] vai
+// para rids[i]). Ou muda tudo, ou nada. NOT NULL e chaves são conferidos
+// aqui.
+func (db *DB) UpdateRows(name string, rids []RID, rows [][]Value) error {
+	if len(rids) != len(rows) {
+		return fmt.Errorf("UpdateRows: %d endereços para %d linhas", len(rids), len(rows))
 	}
-	schema, err := db.TableSchema(name)
+	schema, err := db.writableSchema(name)
 	if err != nil {
 		return err
 	}
 	if err := checkRows(schema, rows); err != nil {
 		return err
 	}
-	if err := checkKeys(schema, rows); err != nil {
-		return err
+
+	t := db.begin()
+	defer t.close()
+	// Primeiro tira as linhas antigas dos índices, depois põe as novas. Assim
+	// trocar valores entre linhas (a = 1 vira 2 e a = 2 vira 1) não esbarra
+	// na chave de uma linha que também está mudando.
+	for _, rid := range rids {
+		old, err := t.row(name, schema, rid)
+		if err != nil {
+			return err
+		}
+		if err := t.removeFromIndexes(schema, rid, old); err != nil {
+			return err
+		}
 	}
-	return db.writeRows(name, schema.Columns, rows)
+	for i, row := range rows {
+		rec, err := encodeRecord(schema.Columns, row)
+		if err != nil {
+			return err
+		}
+		if err := t.checkUnique(schema, row); err != nil {
+			return err
+		}
+		rid, err := t.updateRecord(name, rids[i], rec)
+		if err != nil {
+			return err
+		}
+		if err := t.addToIndexes(schema, rid, row); err != nil {
+			return err
+		}
+	}
+	return t.commit()
 }
 
-// DropTable apaga a tabela: as linhas dela e das chaves dela no catálogo, e
-// depois o arquivo de dados.
+// DeleteRows apaga as linhas dos endereços rids.
+func (db *DB) DeleteRows(name string, rids []RID) error {
+	schema, err := db.writableSchema(name)
+	if err != nil {
+		return err
+	}
+	t := db.begin()
+	defer t.close()
+	for _, rid := range rids {
+		row, err := t.row(name, schema, rid)
+		if err != nil {
+			return err
+		}
+		if err := t.removeFromIndexes(schema, rid, row); err != nil {
+			return err
+		}
+		if err := t.deleteRecord(name, rid); err != nil {
+			return err
+		}
+	}
+	return t.commit()
+}
+
+// row lê e decodifica a linha do endereço rid.
+func (t *tx) row(name string, schema Schema, rid RID) ([]Value, error) {
+	rec, err := t.record(name, rid)
+	if err != nil {
+		return nil, err
+	}
+	row, err := decodeRecord(schema.Columns, rec)
+	if err != nil {
+		return nil, fmt.Errorf("tabela %q corrompida, linha %s: %w", name, rid, err)
+	}
+	return row, nil
+}
+
+// DropTable apaga a tabela: as linhas dela e dos índices dela no catálogo, e
+// depois os arquivos.
 func (db *DB) DropTable(name string) error {
 	if isSystem(name) {
 		return fmt.Errorf("tabela %q é do sistema e não pode ser apagada", name)
 	}
-	if _, err := db.TableSchema(name); err != nil {
-		return err
-	}
-
-	catalog, err := db.readRows(catalogName, catalogSchema.Columns)
+	schema, err := db.TableSchema(name)
 	if err != nil {
 		return err
 	}
-	kept := slices.DeleteFunc(catalog, func(row []Value) bool { return row[2].Text == name })
-	if err := db.writeRows(catalogName, catalogSchema.Columns, kept); err != nil {
+
+	t := db.begin()
+	defer t.close()
+	if err := t.deleteCatalog(func(row []Value) bool { return row[2].Text == name }); err != nil {
+		return err
+	}
+	if err := t.commit(); err != nil {
 		return err
 	}
 	delete(db.tables, name)
 
-	if err := os.Remove(db.tablePath(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("tabela removida do catálogo, mas o arquivo ficou: %w", err)
+	var errs []error
+	for _, n := range append([]string{name}, indexNames(schema)...) {
+		if err := os.Remove(db.tablePath(n)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("tabela removida do catálogo, mas sobraram arquivos: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+func indexNames(schema Schema) []string {
+	var names []string
+	for _, idx := range schema.Indexes {
+		names = append(names, idx.Name)
+	}
+	return names
 }
 
 // checkRows confere o número de valores e o NOT NULL de cada linha.
@@ -374,38 +582,6 @@ func checkRows(schema Schema, rows [][]Value) error {
 			if c.NotNull && row[i].Null {
 				return fmt.Errorf("a coluna %s não aceita NULL", c.Name)
 			}
-		}
-	}
-	return nil
-}
-
-// checkKeys confere que nenhuma chave se repete entre as linhas. Sem índice
-// ainda, quem chama passa a tabela inteira. Como no SQL, NULL não é igual a
-// nada: uma chave UNIQUE aceita várias linhas com NULL.
-func checkKeys(schema Schema, rows [][]Value) error {
-	for _, k := range schema.Keys {
-		positions := make([]int, len(k.Columns))
-		for i, c := range k.Columns {
-			positions[i] = schema.ColumnIndex(c)
-		}
-
-		seen := map[string]bool{}
-		for _, row := range rows {
-			values := pick(row, positions)
-			if slices.Contains(values, Null) {
-				continue
-			}
-			texts := make([]string, len(values))
-			for i, v := range values {
-				texts[i] = v.Text
-			}
-			// %q deixa ("a,b", "c") diferente de ("a", "b,c").
-			id := fmt.Sprintf("%q", texts)
-			if seen[id] {
-				return fmt.Errorf("valor duplicado viola a chave %s: (%s) = (%s) já existe",
-					k.Name, strings.Join(k.Columns, ", "), strings.Join(texts, ", "))
-			}
-			seen[id] = true
 		}
 	}
 	return nil
@@ -425,24 +601,61 @@ func columnIndex(columns []Column, name string) int {
 	return slices.IndexFunc(columns, func(c Column) bool { return c.Name == name })
 }
 
+// Scan percorre as linhas da tabela, na ordem em que estão no arquivo:
+//
+//	for row, err := range db.Scan("users") { ... }
+//
+// Um erro vem como último item.
+func (db *DB) Scan(name string) iter.Seq2[Row, error] {
+	return func(yield func(Row, error) bool) {
+		schema, err := db.TableSchema(name)
+		if err != nil {
+			yield(Row{}, err)
+			return
+		}
+		if rows, ok, err := db.systemRows(name); ok || err != nil {
+			if err != nil {
+				yield(Row{}, err)
+				return
+			}
+			for _, r := range rows {
+				if !yield(Row{Values: r}, nil) {
+					return
+				}
+			}
+			return
+		}
+
+		t := db.begin()
+		defer t.close()
+		err = t.scanRecords(name, func(rid RID, rec []byte) (bool, error) {
+			row, err := decodeRecord(schema.Columns, rec)
+			if err != nil {
+				return false, fmt.Errorf("tabela %q corrompida, linha %s: %w", name, rid, err)
+			}
+			return yield(Row{RID: rid, Values: row}, nil), nil
+		})
+		if err != nil {
+			yield(Row{}, err)
+		}
+	}
+}
+
+// ReadTable lê a tabela inteira para a memória.
 func (db *DB) ReadTable(name string) (*Table, error) {
 	schema, err := db.TableSchema(name)
 	if err != nil {
 		return nil, err
 	}
-	var rows [][]Value
-	switch name {
-	case settingsName:
-		rows = db.settingsRows()
-	case tablesName:
-		rows, err = db.tablesRows()
-	default:
-		rows, err = db.readRows(name, schema.Columns)
+	table := &Table{Schema: schema}
+	for row, err := range db.Scan(name) {
+		if err != nil {
+			return nil, err
+		}
+		table.Rows = append(table.Rows, row.Values)
+		table.RIDs = append(table.RIDs, row.RID)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &Table{Schema: schema, Rows: rows}, nil
+	return table, nil
 }
 
 func (db *DB) tablePath(name string) string {
@@ -452,77 +665,6 @@ func (db *DB) tablePath(name string) string {
 // isSystem diz se o nome é de um objeto do sistema, como o catálogo.
 func isSystem(name string) bool {
 	return strings.HasPrefix(name, "_")
-}
-
-// readRows lê todos os registros de um arquivo de tabela, página por página,
-// na ordem dos slots.
-func (db *DB) readRows(name string, columns []Column) ([][]Value, error) {
-	pages, err := readPages(db.tablePath(name), db.pageSize)
-	if err != nil {
-		return nil, fmt.Errorf("tabela %q: %w", name, err)
-	}
-
-	var rows [][]Value
-	for i, page := range pages {
-		records, err := pageRecords(page)
-		if err != nil {
-			return nil, fmt.Errorf("tabela %q corrompida, página %d: %w", name, i+1, err)
-		}
-		for j, rec := range records {
-			row, err := decodeRecord(columns, rec)
-			if err != nil {
-				return nil, fmt.Errorf("tabela %q corrompida, página %d, slot %d: %w", name, i+1, j, err)
-			}
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
-}
-
-// appendRows acrescenta registros depois do último: enche a última página
-// antes de abrir outra.
-func (db *DB) appendRows(name string, columns []Column, rows [][]Value) error {
-	path := db.tablePath(name)
-	pages, err := readPages(path, db.pageSize)
-	if err != nil {
-		return fmt.Errorf("tabela %q: %w", name, err)
-	}
-	pages, err = db.addRows(pages, columns, rows)
-	if err != nil {
-		return err
-	}
-	return writePages(path, db.pageSize, pages)
-}
-
-// writeRows troca todos os registros de um arquivo de tabela por rows.
-func (db *DB) writeRows(name string, columns []Column, rows [][]Value) error {
-	pages, err := db.addRows(nil, columns, rows)
-	if err != nil {
-		return err
-	}
-	return writePages(db.tablePath(name), db.pageSize, pages)
-}
-
-// addRows grava as linhas nas páginas, a partir da última. Quando uma
-// página enche, abre outra. Um registro que não cabe numa página vazia é
-// erro, e nada é gravado no disco.
-func (db *DB) addRows(pages [][]byte, columns []Column, rows [][]Value) ([][]byte, error) {
-	limit := db.pageSize - pageHeaderSize - slotSize
-	for _, row := range rows {
-		rec, err := encodeRecord(columns, row)
-		if err != nil {
-			return nil, err
-		}
-		if len(rec) > limit {
-			return nil, fmt.Errorf("registro de %d bytes não cabe numa página de %d bytes (máximo %d por registro)", len(rec), db.pageSize, limit)
-		}
-		if len(pages) == 0 || !addRecord(pages[len(pages)-1], rec) {
-			page := newPage(db.pageSize)
-			addRecord(page, rec)
-			pages = append(pages, page)
-		}
-	}
-	return pages, nil
 }
 
 // formatColumns escreve as colunas como vão para o catálogo:
