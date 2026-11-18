@@ -12,7 +12,10 @@ my_dbms/
 │   ├── main.go           → reads lines from stdin and prints the result; with -listen, starts the server
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
-│   ├── where.go          → compileWhere(): WHERE condition → function that tests a row
+│   ├── where.go          → compileWhere(): WHERE condition → function that tests a row;
+│   │                       scope: the visible columns and the table of each one
+│   ├── join.go           → nested loop JOIN and the EXPLAIN text of a JOIN
+│   ├── join_test.go
 │   ├── plan.go           → choosePlan(): full scan or index, and the EXPLAIN text
 │   ├── format.go         → renders the SELECT result as a table
 │   ├── format_test.go
@@ -80,6 +83,7 @@ INSERT INTO p (nome, id) VALUES ('Caio', 3);
 SELECT * FROM p WHERE (id > 1 OR email IS NULL) AND nome <> 'Bia';
 UPDATE p SET email = 'ana@x' WHERE id = 1;
 DELETE FROM p WHERE email IS NULL;
+SELECT p.nome, pedidos.item FROM p LEFT JOIN pedidos ON p.id = pedidos.pessoa_id;
 CREATE INDEX p_nome ON p (nome);
 EXPLAIN SELECT * FROM p WHERE nome = 'Ana';
 DROP INDEX p_nome;
@@ -97,6 +101,9 @@ DROP TABLE p;
 - `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` and
   parentheses. Comparing with `NULL` is "unknown" and the row doesn't pass,
   as in standard SQL; use `IS NULL`.
+- Columns can be qualified by their table (`p.id`) in `SELECT` and in
+  conditions. `[INNER] JOIN`, `LEFT [OUTER] JOIN` and `RIGHT [OUTER] JOIN`
+  combine tables in a `SELECT`. See [JOIN](#join).
 - `INSERT`, `UPDATE` and `DELETE` write all rows or none: each command is a
   transaction.
 - `CREATE INDEX` creates a (non-unique) B+tree index, and `EXPLAIN` shows
@@ -479,7 +486,8 @@ prefix, as in records, wouldn't work: `'b'` (length 1) would sort before
 ### Choosing the plan
 
 `choosePlan` (`cmd/my_dbms/plan.go`) decides how a `SELECT`, `UPDATE` or
-`DELETE` reads its rows. It only looks at `column op value` comparisons joined
+`DELETE` reads its rows (a `SELECT` with a JOIN doesn't go through it: see
+[JOIN](#join)). It only looks at `column op value` comparisons joined
 by `AND` at the top level of the `WHERE` (with `OR`, a row may pass through
 the side the index doesn't cover):
 
@@ -500,6 +508,55 @@ my_dbms> EXPLAIN SELECT * FROM p WHERE idade = 30 OR id = 1;
 varredura completa na tabela p
 ```
 
+## JOIN
+
+```sql
+SELECT pessoas.nome, pedidos.item
+FROM pessoas
+LEFT JOIN pedidos ON pessoas.id = pedidos.pessoa_id
+WHERE pedidos.id IS NULL;   -- people without orders
+```
+
+- `[INNER] JOIN`, `LEFT [OUTER] JOIN` and `RIGHT [OUTER] JOIN`, each with its
+  own `ON`. Several JOINs are combined left to right:
+  `a JOIN b ON … LEFT JOIN c ON …` is `(a JOIN b) LEFT JOIN c`.
+- A column can be written as `table.column` in `SELECT`, `ON` and `WHERE`
+  (with or without a JOIN). Without the table, the name must exist in only
+  one table; if it is in two, it's an ambiguous column error. Names are
+  resolved by the `scope` (`cmd/my_dbms/where.go`): the columns of every
+  table, one after the other, and the table of each one.
+- `ON` only sees the tables that came before it; `WHERE` and the `SELECT`
+  columns see all of them.
+- `ON` decides what matches, and `WHERE` filters afterwards. In a
+  `LEFT JOIN`, a condition on the right table placed in `ON` keeps the left
+  rows without a match (with `NULL`); the same condition in `WHERE` removes
+  those rows. As in `WHERE`, only true matches: `NULL = NULL` doesn't.
+- `LEFT` keeps left rows without a match, with `NULL` in the right columns.
+  `RIGHT` does the opposite, and unmatched right rows come last, after the
+  pairs.
+- `SELECT *` returns the columns in `FROM` and JOIN order. In the header, a
+  column is prefixed with its table (`pessoas.id`) only when another result
+  column, from another table, has the same name. The server sends that same
+  name in `columns`.
+- There are no aliases yet, so a table can't appear twice in the same
+  `FROM`.
+- `JOIN`, `INNER`, `LEFT`, `RIGHT` and `OUTER` are keywords: they can no
+  longer be used as table or column names.
+
+A JOIN runs as a **nested loop** (`cmd/my_dbms/join.go`). Each table is read
+fully into memory once (`db.ReadTable`) and, for each row joined so far, the
+loop goes through every row of the next table and tests `ON` on the pair.
+Reading everything first keeps a single read transaction open at a time and
+lets the inner side be walked again for each outer row. The cost is `n × m`
+comparisons and the memory of the whole tables; using an index for a JOIN
+(index nested loop) or a hash join is left for later. `EXPLAIN` shows it:
+
+```
+my_dbms> EXPLAIN SELECT * FROM pessoas LEFT JOIN pedidos ON pessoas.id = pessoa_id;
+varredura completa na tabela pessoas
+LEFT JOIN por nested loop: varredura completa na tabela pedidos
+```
+
 ## Adding a command
 
 1. If the command uses a new word, add it to `keywords` in
@@ -507,7 +564,7 @@ varredura completa na tabela p
 2. In `internal/parser/ast.go`, create the command's type with the
    `statement()` method. In `parser.go`, add a `case` in `statement` and the
    method that reads its grammar, using the helpers `expect`, `accept`,
-   `ident`, `literal`, `list` and `names`.
+   `ident`, `columnRef`, `literal`, `list` and `names`.
 3. Add a `case` in `cmd/my_dbms/execute.go` that calls the command's own
    function (like `createTable`, `insert`, `selectRows`):
    ```go

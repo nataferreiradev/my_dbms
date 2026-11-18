@@ -15,6 +15,8 @@ ler de cima a baixo.
 - `INSERT` com lista de colunas e com várias linhas de uma vez
 - `SELECT` com projeção de colunas e `WHERE` com `=`, `<>`, `<`, `>`, `<=`,
   `>=`, `AND`, `OR`, parênteses e `IS [NOT] NULL`
+- `[INNER] JOIN`, `LEFT JOIN` e `RIGHT JOIN` por nested loop, com colunas
+  qualificadas (`pessoas.id`)
 - `UPDATE`, `DELETE` e `DROP TABLE`
 - índices B+tree: um para cada `PRIMARY KEY` e `UNIQUE` (é ele que confere a
   chave) e os criados com `CREATE INDEX`; `SELECT`, `UPDATE` e `DELETE`
@@ -93,6 +95,11 @@ SELECT nome FROM pessoas WHERE cidade IS NULL;
 UPDATE pessoas SET cidade = 'Recife' WHERE id = 4;
 DELETE FROM pessoas WHERE idade < 18;
 
+-- JOIN: LEFT mantém as pessoas sem cidade, com NULL
+CREATE TABLE cidades (nome TEXT PRIMARY KEY, estado TEXT);
+INSERT INTO cidades VALUES ('Recife', 'PE'), ('Natal', 'RN');
+SELECT pessoas.nome, estado FROM pessoas LEFT JOIN cidades ON pessoas.cidade = cidades.nome;
+
 -- Chave composta, REAL e BOOLEAN
 CREATE TABLE matriculas (aluno INT, curso INT, nota REAL, aprovado BOOLEAN, PRIMARY KEY (aluno, curso));
 INSERT INTO matriculas VALUES (1, 10, 8.5, TRUE), (2, 10, 4.75, FALSE);
@@ -113,6 +120,7 @@ SELECT * FROM _settings;
 SELECT name, rows, pages FROM _tables WHERE rows > 0;
 
 DROP TABLE matriculas;
+DROP TABLE cidades;
 ```
 
 Os erros dizem o que estava errado e onde:
@@ -178,7 +186,7 @@ Os commits seguem o Conventional Commits, em inglês: veja
 - páginas de overflow para registros maiores que uma página
 - um mapa de espaço livre, para o `INSERT` reaproveitar páginas antigas
 - `BEGIN`/`COMMIT` com vários comandos numa transação, e depois WAL e MVCC
-- `JOIN`
+- alias de tabela e índice ou hash join no `JOIN`
 
 ## Licença
 
