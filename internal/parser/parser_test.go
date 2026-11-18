@@ -81,7 +81,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "SELECT * FROM t WHERE ativo = TRUE",
-			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"ativo"}, Right: Literal{Bool, "TRUE"}}},
+			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{Name: "ativo"}, Right: Literal{Bool, "TRUE"}}},
 		},
 		{
 			input: `INSERT INTO t (nome, id) VALUES ('Ana', 1), ('Bia', 2)`,
@@ -96,7 +96,15 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "select nome, id from t",
-			want:  &Select{Table: "t", Columns: []string{"nome", "id"}},
+			want:  &Select{Table: "t", Columns: []ColumnRef{{Name: "nome"}, {Name: "id"}}},
+		},
+		{
+			input: "SELECT t.nome, id FROM t WHERE t.id = 1",
+			want: &Select{
+				Table:   "t",
+				Columns: []ColumnRef{{Table: "t", Name: "nome"}, {Name: "id"}},
+				Where:   &Comparison{Op: "=", Left: ColumnRef{Table: "t", Name: "id"}, Right: Literal{Number, "1"}},
+			},
 		},
 		{
 			input: "UPDATE t SET nome = 'Bia', idade = NULL WHERE id = 2",
@@ -106,7 +114,7 @@ func TestParse(t *testing.T) {
 					{Column: "nome", Value: Literal{String, "Bia"}},
 					{Column: "idade", Value: Literal{Null, "NULL"}},
 				},
-				Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "2"}},
+				Where: &Comparison{Op: "=", Left: ColumnRef{Name: "id"}, Right: Literal{Number, "2"}},
 			},
 		},
 		{
@@ -115,7 +123,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "DELETE FROM t WHERE a IS NULL;",
-			want:  &Delete{Table: "t", Where: &IsNull{Expr: ColumnRef{"a"}}},
+			want:  &Delete{Table: "t", Where: &IsNull{Expr: ColumnRef{Name: "a"}}},
 		},
 		{
 			input: "DELETE FROM t",
@@ -130,11 +138,11 @@ func TestParse(t *testing.T) {
 			input: "SELECT * FROM t WHERE a = 1 OR b > 'x' AND c IS NOT NULL",
 			want: &Select{Table: "t", Where: &Logical{
 				Op:   "OR",
-				Left: &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
+				Left: &Comparison{Op: "=", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
 				Right: &Logical{
 					Op:    "AND",
-					Left:  &Comparison{Op: ">", Left: ColumnRef{"b"}, Right: Literal{String, "x"}},
-					Right: &IsNull{Expr: ColumnRef{"c"}, Not: true},
+					Left:  &Comparison{Op: ">", Left: ColumnRef{Name: "b"}, Right: Literal{String, "x"}},
+					Right: &IsNull{Expr: ColumnRef{Name: "c"}, Not: true},
 				},
 			}},
 		},
@@ -144,10 +152,10 @@ func TestParse(t *testing.T) {
 				Op: "AND",
 				Left: &Logical{
 					Op:    "OR",
-					Left:  &Comparison{Op: "<>", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
-					Right: &IsNull{Expr: ColumnRef{"b"}},
+					Left:  &Comparison{Op: "<>", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
+					Right: &IsNull{Expr: ColumnRef{Name: "b"}},
 				},
-				Right: &Comparison{Op: "<=", Left: Literal{Number, "2"}, Right: ColumnRef{"a"}},
+				Right: &Comparison{Op: "<=", Left: Literal{Number, "2"}, Right: ColumnRef{Name: "a"}},
 			}},
 		},
 		{
@@ -156,10 +164,10 @@ func TestParse(t *testing.T) {
 				Op: "AND",
 				Left: &Logical{
 					Op:    "AND",
-					Left:  &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
-					Right: &Comparison{Op: "=", Left: ColumnRef{"b"}, Right: Literal{Number, "2"}},
+					Left:  &Comparison{Op: "=", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
+					Right: &Comparison{Op: "=", Left: ColumnRef{Name: "b"}, Right: Literal{Number, "2"}},
 				},
-				Right: &Comparison{Op: "=", Left: ColumnRef{"c"}, Right: Literal{Number, "3"}},
+				Right: &Comparison{Op: "=", Left: ColumnRef{Name: "c"}, Right: Literal{Number, "3"}},
 			}},
 		},
 		{
@@ -169,7 +177,7 @@ func TestParse(t *testing.T) {
 		{input: "DROP INDEX t_nome", want: &DropIndex{Name: "t_nome"}},
 		{
 			input: "EXPLAIN SELECT * FROM t WHERE id = 1",
-			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "1"}}}},
+			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{Name: "id"}, Right: Literal{Number, "1"}}}},
 		},
 		{input: "explain delete from t", want: &Explain{Statement: &Delete{Table: "t"}}},
 	}
@@ -222,6 +230,9 @@ func TestParseErrors(t *testing.T) {
 		{input: "UPDATE t SET a 1", wantErr: `esperava "="`},
 		{input: "UPDATE t SET a = b", wantErr: "esperava um valor"},
 		{input: "UPDATE t SET a = 1,", wantErr: "esperava um nome"},
+		{input: "UPDATE t SET t.a = 1", wantErr: "esperava um nome"},
+		{input: "CREATE TABLE t.x (a INT)", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM t.x", wantErr: "esperava um nome"},
 		{input: "DELETE t", wantErr: `esperava "FROM"`},
 		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
 		{input: "DROP t", wantErr: `esperava "TABLE"`},

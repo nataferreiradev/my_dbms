@@ -87,8 +87,11 @@ func isBoundary(r rune) bool {
 	return unicode.IsSpace(r) || strings.ContainsRune(symbols+operatorChars+`"'`, r)
 }
 
+// Um nome pode vir qualificado pela tabela, como pessoas.id. Ele sai como um
+// token só, e o parser separa as partes. O ponto não vira símbolo porque
+// separaria também os números: 1.5 viraria [1] [.] [5].
 var (
-	identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 	numberPattern     = regexp.MustCompile(`^[+-]?[0-9]+(\.[0-9]+)?$`)
 )
 

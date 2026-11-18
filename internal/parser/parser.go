@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"my_DBMS/internal/sql"
 )
@@ -180,11 +181,11 @@ func (p *parser) selectStmt() (*Select, error) {
 	stmt := &Select{}
 	if !p.accept("*") {
 		for {
-			name, err := p.ident()
+			col, err := p.columnRef()
 			if err != nil {
 				return nil, err
 			}
-			stmt.Columns = append(stmt.Columns, name)
+			stmt.Columns = append(stmt.Columns, col)
 			if !p.accept(",") {
 				break
 			}
@@ -378,8 +379,7 @@ func (p *parser) comparison() (Expr, error) {
 // operand lê um nome de coluna ou um valor.
 func (p *parser) operand() (Expr, error) {
 	if p.peek().Type == sql.Identifier {
-		name, err := p.ident()
-		return ColumnRef{Name: name}, err
+		return p.columnRef()
 	}
 	lit, err := p.literal()
 	if err != nil {
@@ -475,14 +475,28 @@ func (p *parser) expect(values ...string) error {
 	return nil
 }
 
-// ident consome um nome (de tabela ou coluna).
+// ident consome um nome simples (de tabela, coluna ou índice), sem ponto.
 func (p *parser) ident() (string, error) {
 	t := p.peek()
-	if t.Type != sql.Identifier {
+	if t.Type != sql.Identifier || strings.Contains(t.Value, ".") {
 		return "", p.unexpected("um nome")
 	}
 	p.pos++
 	return t.Value, nil
+}
+
+// columnRef consome uma coluna: nome ou tabela.nome. O lexer já garantiu
+// que há no máximo um ponto, com um nome de cada lado.
+func (p *parser) columnRef() (ColumnRef, error) {
+	t := p.peek()
+	if t.Type != sql.Identifier {
+		return ColumnRef{}, p.unexpected("um nome")
+	}
+	p.pos++
+	if table, name, ok := strings.Cut(t.Value, "."); ok {
+		return ColumnRef{Table: table, Name: name}, nil
+	}
+	return ColumnRef{Name: t.Value}, nil
 }
 
 // unexpected monta o erro "esperava X, veio Y" com a posição do token atual.

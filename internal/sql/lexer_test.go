@@ -70,6 +70,10 @@ func TestLex(t *testing.T) {
 			},
 		},
 		{
+			input: "p.id=c.pessoa_id",
+			want:  []Token{{Identifier, "p.id", 0}, {Operator, "=", 4}, {Identifier, "c.pessoa_id", 5}},
+		},
+		{
 			input: `'Ana','it''s'`,
 			want:  []Token{{String, "Ana", 0}, {Symbol, ",", 5}, {String, "it's", 6}},
 		},
@@ -102,6 +106,9 @@ func TestLexInvalid(t *testing.T) {
 		"1.",
 		".5",
 		"é = 1",
+		"p.",
+		"a.b.c",
+		"p.1",
 	}
 	for _, input := range inputs {
 		if _, err := Lex(input); err == nil {

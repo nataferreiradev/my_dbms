@@ -38,7 +38,7 @@ type Insert struct {
 // dizer *, e Where nil quer dizer todas as linhas.
 type Select struct {
 	Table   string
-	Columns []string
+	Columns []ColumnRef
 	Where   Expr
 }
 
@@ -134,9 +134,19 @@ type IsNull struct {
 	Not  bool
 }
 
-// ColumnRef é o nome de uma coluna usado numa condição.
+// ColumnRef é uma coluna usada no SELECT ou numa condição: coluna ou
+// tabela.coluna. Table vazio quer dizer que o nome não veio qualificado.
 type ColumnRef struct {
-	Name string
+	Table string
+	Name  string
+}
+
+// String escreve a coluna como no SQL.
+func (c ColumnRef) String() string {
+	if c.Table == "" {
+		return c.Name
+	}
+	return c.Table + "." + c.Name
 }
 
 func (*Logical) expr()    {}

@@ -140,7 +140,7 @@ func update(db *storage.DB, s *parser.Update) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, schema)
+	where, err := compileWhere(s.Where, tableScope(s.Table, schema))
 	if err != nil {
 		return "", err
 	}
@@ -192,7 +192,7 @@ func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, schema)
+	where, err := compileWhere(s.Where, tableScope(s.Table, schema))
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +233,7 @@ func explain(db *storage.DB, s *parser.Explain) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := compileWhere(where, schema); err != nil {
+	if _, err := compileWhere(where, tableScope(table, schema)); err != nil {
 		return "", err
 	}
 	return choosePlan(table, schema, where).String(), nil
@@ -315,30 +315,17 @@ func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	where, err := compileWhere(s.Where, table)
+	sc := tableScope(s.Table, table)
+	where, err := compileWhere(s.Where, sc)
+	if err != nil {
+		return nil, err
+	}
+	indexes, err := projection(sc, s.Columns)
 	if err != nil {
 		return nil, err
 	}
 
-	// indexes diz quais colunas da tabela entram no resultado, em ordem.
-	var indexes []int
-	if s.Columns == nil {
-		for i := range table.Columns {
-			indexes = append(indexes, i)
-		}
-	}
-	for _, name := range s.Columns {
-		i := table.ColumnIndex(name)
-		if i < 0 {
-			return nil, fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
-		}
-		indexes = append(indexes, i)
-	}
-
-	r := &selectResult{}
-	for _, i := range indexes {
-		r.Columns = append(r.Columns, table.Columns[i])
-	}
+	r := &selectResult{Columns: resultColumns(sc, indexes)}
 	for row, err := range choosePlan(s.Table, table, s.Where).rows(db) {
 		if err != nil {
 			return nil, err
@@ -353,6 +340,46 @@ func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
 		r.Rows = append(r.Rows, picked)
 	}
 	return r, nil
+}
+
+// projection diz quais colunas do escopo entram no resultado, em ordem.
+// columns nil é o *: todas, na ordem do escopo.
+func projection(sc scope, columns []parser.ColumnRef) ([]int, error) {
+	var indexes []int
+	if columns == nil {
+		for i := range sc.columns {
+			indexes = append(indexes, i)
+		}
+	}
+	for _, ref := range columns {
+		i, err := sc.find(ref)
+		if err != nil {
+			return nil, err
+		}
+		indexes = append(indexes, i)
+	}
+	return indexes, nil
+}
+
+// resultColumns monta as colunas do resultado. O nome ganha a tabela na
+// frente (pessoas.id) só quando outra coluna do resultado, de outra tabela,
+// tem o mesmo nome; sem isso, o cabeçalho de um SELECT com JOIN teria dois
+// "id" sem dizer qual é qual. NOT NULL não é copiado, porque um JOIN externo
+// preenche com NULL até coluna NOT NULL.
+func resultColumns(sc scope, indexes []int) []storage.Column {
+	columns := make([]storage.Column, len(indexes))
+	for j, i := range indexes {
+		c := sc.columns[i]
+		name := c.Name
+		for _, k := range indexes {
+			if sc.columns[k].Name == c.Name && sc.tables[k] != sc.tables[i] {
+				name = sc.tables[i] + "." + c.Name
+				break
+			}
+		}
+		columns[j] = storage.Column{Name: name, Type: c.Type}
+	}
+	return columns
 }
 
 // format desenha o resultado como o texto que o REPL imprime.

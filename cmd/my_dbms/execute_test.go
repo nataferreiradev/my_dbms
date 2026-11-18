@@ -502,3 +502,49 @@ func sameCells(a, b [][]storage.Value) bool {
 	}
 	return slices.Equal(key(a), key(b))
 }
+
+func TestQualifiedColumns(t *testing.T) {
+	db, err := storage.Open(t.TempDir(), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := []string{
+		"CREATE TABLE p (id INT PRIMARY KEY, nome TEXT);",
+		"INSERT INTO p VALUES (1, 'Ana'), (2, 'Bia');",
+	}
+	for _, s := range setup {
+		if _, err := execute(db, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+
+	steps := []struct {
+		input   string
+		want    string
+		wantErr string
+	}{
+		{input: "SELECT p.nome FROM p WHERE p.id = 2", want: "nome\n----\nBia\n(1 linha)"},
+		{input: "EXPLAIN SELECT * FROM p WHERE p.id = 2", want: "busca no índice p_pkey da tabela p (id = 2)"},
+		{input: "UPDATE p SET nome = 'Ana Maria' WHERE p.id = 1", want: "1 linha atualizada"},
+		{input: "SELECT nome FROM p WHERE p.nome IS NOT NULL AND id = 1", want: "nome\n---------\nAna Maria\n(1 linha)"},
+		{input: "DELETE FROM p WHERE p.id = 2", want: "1 linha removida"},
+		{input: "SELECT q.nome FROM p", wantErr: `tabela "q" não está no FROM`},
+		{input: "SELECT * FROM p WHERE q.id = 1", wantErr: `tabela "q" não está no FROM`},
+		{input: "SELECT p.idade FROM p", wantErr: `coluna "p.idade" não existe`},
+	}
+	for _, s := range steps {
+		got, err := execute(db, s.input)
+		if s.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), s.wantErr) {
+				t.Errorf("execute(%q) erro = %v, queria algo com %q", s.input, err, s.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("execute(%q): %v", s.input, err)
+		}
+		if got != s.want {
+			t.Errorf("execute(%q) =\n%s\nwant\n%s", s.input, got, s.want)
+		}
+	}
+}
