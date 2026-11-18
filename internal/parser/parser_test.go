@@ -99,6 +99,37 @@ func TestParse(t *testing.T) {
 			want:  &Select{Table: "t", Columns: []ColumnRef{{Name: "nome"}, {Name: "id"}}},
 		},
 		{
+			input: "SELECT * FROM a JOIN b ON a.id = b.a_id",
+			want: &Select{Table: "a", Joins: []Join{{
+				Kind: "INNER", Table: "b",
+				On: &Comparison{Op: "=", Left: ColumnRef{Table: "a", Name: "id"}, Right: ColumnRef{Table: "b", Name: "a_id"}},
+			}}},
+		},
+		{
+			input: "SELECT a.x, y FROM a inner join b ON x = y LEFT OUTER JOIN c ON c.z IS NULL RIGHT JOIN d ON d.w = 1 WHERE x > 2",
+			want: &Select{
+				Table:   "a",
+				Columns: []ColumnRef{{Table: "a", Name: "x"}, {Name: "y"}},
+				Joins: []Join{
+					{Kind: "INNER", Table: "b", On: &Comparison{Op: "=", Left: ColumnRef{Name: "x"}, Right: ColumnRef{Name: "y"}}},
+					{Kind: "LEFT", Table: "c", On: &IsNull{Expr: ColumnRef{Table: "c", Name: "z"}}},
+					{Kind: "RIGHT", Table: "d", On: &Comparison{Op: "=", Left: ColumnRef{Table: "d", Name: "w"}, Right: Literal{Number, "1"}}},
+				},
+				Where: &Comparison{Op: ">", Left: ColumnRef{Name: "x"}, Right: Literal{Number, "2"}},
+			},
+		},
+		{
+			input: "SELECT * FROM a LEFT JOIN b ON a.id = b.id AND b.ok = TRUE",
+			want: &Select{Table: "a", Joins: []Join{{
+				Kind: "LEFT", Table: "b",
+				On: &Logical{
+					Op:    "AND",
+					Left:  &Comparison{Op: "=", Left: ColumnRef{Table: "a", Name: "id"}, Right: ColumnRef{Table: "b", Name: "id"}},
+					Right: &Comparison{Op: "=", Left: ColumnRef{Table: "b", Name: "ok"}, Right: Literal{Bool, "TRUE"}},
+				},
+			}}},
+		},
+		{
 			input: "SELECT t.nome, id FROM t WHERE t.id = 1",
 			want: &Select{
 				Table:   "t",
@@ -233,6 +264,14 @@ func TestParseErrors(t *testing.T) {
 		{input: "UPDATE t SET t.a = 1", wantErr: "esperava um nome"},
 		{input: "CREATE TABLE t.x (a INT)", wantErr: "esperava um nome"},
 		{input: "SELECT * FROM t.x", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a JOIN b", wantErr: `esperava "ON", mas o comando acabou`},
+		{input: "SELECT * FROM a JOIN ON a.id = 1", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a JOIN b ON", wantErr: "esperava uma coluna ou um valor"},
+		{input: "SELECT * FROM a LEFT b ON a.id = b.id", wantErr: `esperava "JOIN"`},
+		{input: "SELECT * FROM a INNER OUTER JOIN b ON a.id = b.id", wantErr: `esperava "JOIN"`},
+		{input: "SELECT * FROM a OUTER JOIN b ON a.id = b.id", wantErr: "esperava o fim do comando"},
+		{input: "SELECT * FROM a JOIN b.c ON a.id = 1", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a WHERE a.id = 1 JOIN b ON a.id = b.id", wantErr: "esperava o fim do comando"},
 		{input: "DELETE t", wantErr: `esperava "FROM"`},
 		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
 		{input: "DROP t", wantErr: `esperava "TABLE"`},
@@ -269,6 +308,7 @@ func FuzzParse(f *testing.F) {
 		"CREATE INDEX i ON p (a, b);",
 		"DROP INDEX i",
 		"EXPLAIN SELECT * FROM p WHERE a >= 1 AND a < 9",
+		"SELECT p.a, q.b FROM p LEFT OUTER JOIN q ON p.a = q.a RIGHT JOIN r ON r.c IS NULL WHERE q.b > 1;",
 	} {
 		f.Add(s)
 	}

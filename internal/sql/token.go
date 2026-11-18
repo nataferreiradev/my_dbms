@@ -50,6 +50,11 @@ var keywords = map[string]bool{
 	"INDEX":   true,
 	"ON":      true,
 	"EXPLAIN": true,
+	"JOIN":    true,
+	"INNER":   true,
+	"LEFT":    true,
+	"RIGHT":   true,
+	"OUTER":   true,
 }
 
 var operators = map[string]bool{
