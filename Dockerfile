@@ -15,4 +15,6 @@ USER dbms
 VOLUME /app/data
 EXPOSE 4321
 ENTRYPOINT ["my_dbms"]
-CMD ["-listen", "0.0.0.0:4321"]
+# Página web em http://<host>:4321. Para o protocolo TCP, rode com
+# -listen 0.0.0.0:4321.
+CMD ["-http", "0.0.0.0:4321"]
