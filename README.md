@@ -75,6 +75,9 @@ linha de JSON de resposta para cada um. Dá para testar com
 `nc localhost 4321`. O protocolo e como a concorrência funciona estão em
 [docs/estrutura.md](docs/estrutura.md#servidor).
 
+Para usar pelo navegador, suba com `-http` no lugar de `-listen` e abra
+`http://localhost:4321`.
+
 ## Mais exemplos
 
 ```sql

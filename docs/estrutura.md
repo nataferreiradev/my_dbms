@@ -8,7 +8,7 @@ O objetivo é ter código pequeno e direto, que dê para ler de cima a baixo.
 ```
 my_dbms/
 ├── cmd/my_dbms/          → executável (REPL ou servidor TCP)
-│   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen, sobe o servidor
+│   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen ou -http, sobe o servidor
 │   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha
@@ -17,6 +17,8 @@ my_dbms/
 │   ├── format_test.go
 │   ├── server.go         → servidor TCP: uma goroutine por conexão e trava de leitura/escrita
 │   ├── server_test.go
+│   ├── web.go            → servidor HTTP: POST /sql, para a página web/index.html
+│   ├── web_test.go
 │   └── bench_test.go     → benchmark do SELECT por chave
 ├── internal/
 │   ├── config/           → parâmetros do banco
@@ -47,6 +49,9 @@ my_dbms/
 │       ├── system.go     → tabelas do sistema montadas na memória: _settings, _tables, _indexes
 │       ├── system_test.go
 │       └── bench_test.go → benchmarks de INSERT com chave e de leitura da tabela
+├── web/
+│   ├── index.html        → página para rodar SQL pelo navegador (fala com o -http)
+│   └── web.go            → põe a index.html dentro do executável (go:embed)
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet e testes no Linux e no Windows
 ├── docs/                 → documentação do projeto (português)
@@ -130,6 +135,23 @@ jeito dele (a interface web desenha em HTML). Os valores vêm como texto e
 ```
 
 Linha vazia recebe `{}`, e `exit` ou `quit` fecham a conexão.
+
+### Pela web
+
+O navegador não fala TCP puro, então com `-http` o executável atende por
+HTTP em vez de TCP: cada `POST /sql` leva um comando no corpo e recebe o
+mesmo JSON de cima. A resposta tem `Access-Control-Allow-Origin: *`, para a
+página funcionar aberta de qualquer lugar.
+
+```
+go run ./cmd/my_dbms -http localhost:4321
+```
+
+A página é `web/index.html`, um arquivo só, sem dependências. Ela vai dentro
+do executável (`go:embed`, no pacote `web`) e o servidor a entrega em `/`:
+basta abrir `http://localhost:4321` no navegador e rodar SQL, um comando por
+linha. Aberta direto do disco, ela pede o endereço do servidor. Um `SELECT`
+vira uma tabela HTML montada com `columns` e `rows`.
 
 Cada conexão roda na sua goroutine, e todas usam o mesmo `storage.DB`. Um
 `sync.RWMutex` no `server` controla o acesso: vários `SELECT` rodam juntos,

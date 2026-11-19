@@ -9,7 +9,7 @@ bottom.
 ```
 my_dbms/
 ├── cmd/my_dbms/          → executable (REPL or TCP server)
-│   ├── main.go           → reads lines from stdin and prints the result; with -listen, starts the server
+│   ├── main.go           → reads lines from stdin and prints the result; with -listen or -http, starts the server
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): WHERE condition → function that tests a row
@@ -18,6 +18,8 @@ my_dbms/
 │   ├── format_test.go
 │   ├── server.go         → TCP server: one goroutine per connection and a read/write lock
 │   ├── server_test.go
+│   ├── web.go            → HTTP server: POST /sql, for the web/index.html page
+│   ├── web_test.go
 │   └── bench_test.go     → benchmark of SELECT by key
 ├── internal/
 │   ├── config/           → database parameters
@@ -48,6 +50,9 @@ my_dbms/
 │       ├── system.go     → system tables built in memory: _settings, _tables, _indexes
 │       ├── system_test.go
 │       └── bench_test.go → benchmarks of INSERT with a key and of reading a table
+├── web/
+│   ├── index.html        → page to run SQL from the browser (talks to -http)
+│   └── web.go            → builds index.html into the executable (go:embed)
 ├── .github/workflows/
 │   └── ci.yml            → GitHub Actions: gofmt, go vet and tests on Linux and Windows
 ├── docs/                 → project documentation (Portuguese)
@@ -132,6 +137,23 @@ table its own way (the web UI draws it in HTML). Values come as text and
 ```
 
 An empty line gets `{}`, and `exit` or `quit` close the connection.
+
+### From the web
+
+Browsers don't speak raw TCP, so with `-http` the executable serves HTTP
+instead of TCP: each `POST /sql` carries one command in the body and gets the
+same JSON as above. The response has `Access-Control-Allow-Origin: *`, so
+the page works when opened from anywhere.
+
+```
+go run ./cmd/my_dbms -http localhost:4321
+```
+
+The page is `web/index.html`, a single file with no dependencies. It is built
+into the executable (`go:embed`, in the `web` package) and the server serves
+it at `/`: open `http://localhost:4321` in a browser and run SQL, one command
+per line. Opened straight from disk, it asks for the server address. A
+`SELECT` becomes an HTML table built from `columns` and `rows`.
 
 Each connection runs in its own goroutine, and all of them share the same
 `storage.DB`. A `sync.RWMutex` in `server` guards access: many `SELECT`s run
