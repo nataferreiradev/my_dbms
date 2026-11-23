@@ -2,16 +2,18 @@ package parser
 
 // Statement é um comando já analisado. O tipo concreto diz qual:
 // *CreateTable, *Insert, *Select, *Update, *Delete, *DropTable, *CreateIndex,
-// *DropIndex ou *Explain.
+// *DropIndex, *Explain ou *Search.
 type Statement interface {
 	statement()
 }
 
-// CreateTable é CREATE TABLE nome (colunas e chaves).
+// CreateTable é CREATE TABLE nome (colunas e chaves) [WITH EMBEDDING (colunas)].
+// Embedding são as colunas do índice vetorial; nil é sem índice vetorial.
 type CreateTable struct {
-	Name    string
-	Columns []ColumnDef
-	Keys    []KeyDef
+	Name      string
+	Columns   []ColumnDef
+	Keys      []KeyDef
+	Embedding []string
 }
 
 type ColumnDef struct {
@@ -75,11 +77,13 @@ type DropTable struct {
 	Name string
 }
 
-// CreateIndex é CREATE INDEX nome ON tabela (colunas).
+// CreateIndex é CREATE [VECTOR] INDEX nome ON tabela (colunas). Vector é o
+// índice vetorial, para o SEARCH.
 type CreateIndex struct {
 	Name    string
 	Table   string
 	Columns []string
+	Vector  bool
 }
 
 // DropIndex é DROP INDEX nome.
@@ -93,6 +97,17 @@ type Explain struct {
 	Statement Statement
 }
 
+// Search é SEARCH tabela FOR 'texto' [TOP n]: as n linhas (10 sem TOP) mais
+// parecidas com o texto, pelo índice vetorial da tabela.
+type Search struct {
+	Table string
+	Query string
+	Top   int
+}
+
+// DefaultTop é quantas linhas o SEARCH devolve sem TOP.
+const DefaultTop = 10
+
 func (*CreateTable) statement() {}
 func (*Insert) statement()      {}
 func (*Select) statement()      {}
@@ -102,6 +117,7 @@ func (*DropTable) statement()   {}
 func (*CreateIndex) statement() {}
 func (*DropIndex) statement()   {}
 func (*Explain) statement()     {}
+func (*Search) statement()      {}
 
 type LiteralKind int
 

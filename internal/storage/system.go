@@ -117,6 +117,15 @@ func (db *DB) indexesRows() ([][]Value, error) {
 			rows = append(rows, []Value{Text(idx.Name), Text(table), Text(string(idx.Kind)),
 				Text(strings.Join(idx.Columns, ",")), itoa(pages - 1), itoa(height)})
 		}
+		// O índice vetorial não é árvore: não tem altura.
+		if v := db.tables[table].Vector; v != nil {
+			pages, err := t.pageCount(v.Name)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, []Value{Text(v.Name), Text(table), Text(string(v.Kind)),
+				Text(strings.Join(v.Columns, ",")), itoa(pages - 1), Null})
+		}
 	}
 	return rows, nil
 }

@@ -211,6 +211,20 @@ func TestParse(t *testing.T) {
 			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{Name: "id"}, Right: Literal{Number, "1"}}}},
 		},
 		{input: "explain delete from t", want: &Explain{Statement: &Delete{Table: "t"}}},
+		{
+			input: "CREATE TABLE docs (id INT, titulo TEXT, corpo TEXT) WITH EMBEDDING (titulo, corpo);",
+			want: &CreateTable{
+				Name:      "docs",
+				Columns:   []ColumnDef{{Name: "id", Type: "INT"}, {Name: "titulo", Type: "TEXT"}, {Name: "corpo", Type: "TEXT"}},
+				Embedding: []string{"titulo", "corpo"},
+			},
+		},
+		{
+			input: "create vector index docs_vec on docs (corpo)",
+			want:  &CreateIndex{Name: "docs_vec", Table: "docs", Columns: []string{"corpo"}, Vector: true},
+		},
+		{input: "SEARCH docs FOR 'gatos com medo de água' TOP 5;", want: &Search{Table: "docs", Query: "gatos com medo de água", Top: 5}},
+		{input: `search docs for "gato"`, want: &Search{Table: "docs", Query: "gato", Top: DefaultTop}},
 	}
 
 	for _, tt := range tests {
@@ -282,6 +296,15 @@ func TestParseErrors(t *testing.T) {
 		{input: "DROP INDEX", wantErr: "esperava um nome"},
 		{input: "EXPLAIN", wantErr: "esperava SELECT, UPDATE ou DELETE"},
 		{input: "EXPLAIN DROP TABLE t", wantErr: "esperava SELECT, UPDATE ou DELETE"},
+		{input: "CREATE TABLE t (a TEXT) WITH (a)", wantErr: `esperava "EMBEDDING"`},
+		{input: "CREATE TABLE t (a TEXT) WITH EMBEDDING", wantErr: `esperava "("`},
+		{input: "CREATE VECTOR t ON t (a)", wantErr: `esperava "INDEX"`},
+		{input: "SEARCH docs 'gato'", wantErr: `esperava "FOR"`},
+		{input: "SEARCH docs FOR gato", wantErr: "esperava o texto da busca, entre aspas"},
+		{input: "SEARCH docs FOR 'gato' TOP", wantErr: "esperava um número inteiro maior que zero"},
+		{input: "SEARCH docs FOR 'gato' TOP 0", wantErr: "esperava um número inteiro maior que zero"},
+		{input: "SEARCH docs FOR 'gato' TOP 2.5", wantErr: "esperava um número inteiro maior que zero"},
+		{input: "SEARCH docs FOR 'gato' WHERE id = 1", wantErr: "esperava o fim do comando"},
 	}
 
 	for _, tt := range tests {

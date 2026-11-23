@@ -9,6 +9,8 @@ projeto open source de estudo. A pessoa que mantém o projeto quer código
 ```
 go run ./cmd/my_dbms     # abre o REPL (tabelas ficam no data_dir do my_dbms.conf)
 go run ./cmd/my_dbms -listen localhost:4321   # servidor TCP (protocolo em docs/estrutura.md)
+go run ./cmd/my_dbms -mcp                     # servidor MCP no stdin/stdout (-mcp-write libera alterações)
+go run ./cmd/my_dbms -setup                   # configura a API de embeddings (índices vetoriais, SEARCH)
 go test ./...            # todos os testes
 go vet ./...
 gofmt -l .               # deve sair vazio
@@ -36,6 +38,9 @@ gofmt -l .               # deve sair vazio
   customizados sem necessidade.
 - Testes no mesmo pacote, table-driven quando houver vários casos. Testes de
   storage usam `t.TempDir()`.
+- A chave da API de embeddings nunca vai para o `my_dbms.conf` (ele está no
+  git): fica no arquivo de credenciais do usuário (`config.SaveAPIKey`) ou em
+  `MY_DBMS_API_KEY`. Testes de embedding usam `embed.Fake`, sem rede.
 - Comandos SQL novos: keyword em `internal/sql/token.go` + tipo na AST e
   regra em `internal/parser` + `case` em `cmd/my_dbms/execute.go` + testes.
 

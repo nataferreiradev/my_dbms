@@ -16,5 +16,6 @@ VOLUME /app/data
 EXPOSE 4321
 ENTRYPOINT ["my_dbms"]
 # Página web em http://<host>:4321. Para o protocolo TCP, rode com
-# -listen 0.0.0.0:4321.
+# -listen 0.0.0.0:4321. Para o SEARCH com uma API que pede chave, passe a
+# chave por variável: docker run -e MY_DBMS_API_KEY=... (nunca na imagem).
 CMD ["-http", "0.0.0.0:4321"]

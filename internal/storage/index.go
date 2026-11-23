@@ -16,10 +16,8 @@ import (
 // <nome>.mari na mesma pasta.
 func (db *DB) indexTable(name string) (string, bool) {
 	for table, schema := range db.tables {
-		for _, idx := range schema.Indexes {
-			if idx.Name == name {
-				return table, true
-			}
+		if slices.Contains(indexNames(schema), name) {
+			return table, true
 		}
 	}
 	return "", false
@@ -124,16 +122,8 @@ func (db *DB) CreateIndex(name, table string, columns []string) error {
 	if err != nil {
 		return err
 	}
-	if len(columns) == 0 {
-		return errors.New("índice sem colunas")
-	}
-	for i, c := range columns {
-		if schema.ColumnIndex(c) < 0 {
-			return fmt.Errorf("coluna %q não existe na tabela %s", c, table)
-		}
-		if slices.Contains(columns[:i], c) {
-			return fmt.Errorf("coluna %q repetida no índice", c)
-		}
+	if err := checkIndexColumns(schema, table, columns); err != nil {
+		return err
 	}
 	idx := Index{Name: name, Kind: PlainIndex, Columns: slices.Clone(columns)}
 
@@ -182,21 +172,29 @@ func (db *DB) DropIndex(name string) error {
 		return fmt.Errorf("índice %q não existe", name)
 	}
 	schema := db.tables[table]
+	kind := VectorIndex
 	i := slices.IndexFunc(schema.Indexes, func(idx Index) bool { return idx.Name == name })
-	if schema.Indexes[i].Kind != PlainIndex {
-		return fmt.Errorf("o índice %s é da chave %s da tabela %s e só sai com a tabela", name, schema.Indexes[i].Kind, table)
+	if i >= 0 {
+		kind = schema.Indexes[i].Kind
+	}
+	if kind != PlainIndex && kind != VectorIndex {
+		return fmt.Errorf("o índice %s é da chave %s da tabela %s e só sai com a tabela", name, kind, table)
 	}
 
 	t := db.begin()
 	defer t.close()
-	err := t.deleteCatalog(func(row []Value) bool { return row[0].Text == string(PlainIndex) && row[1].Text == name })
+	err := t.deleteCatalog(func(row []Value) bool { return row[0].Text == string(kind) && row[1].Text == name })
 	if err != nil {
 		return err
 	}
 	if err := t.commit(); err != nil {
 		return err
 	}
-	schema.Indexes = slices.Delete(slices.Clone(schema.Indexes), i, i+1)
+	if kind == VectorIndex {
+		schema.Vector = nil
+	} else {
+		schema.Indexes = slices.Delete(slices.Clone(schema.Indexes), i, i+1)
+	}
 	db.tables[table] = schema
 	if err := os.Remove(db.tablePath(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("índice removido do catálogo, mas o arquivo ficou: %w", err)

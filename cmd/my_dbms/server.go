@@ -48,17 +48,25 @@ type column struct {
 	Type string `json:"type"`
 }
 
-// execute roda um comando com a trava certa para o tipo dele. Um SELECT
-// roda com a trava de leitura e devolve também as colunas e as linhas.
+// execute roda um comando com a trava certa para o tipo dele. Um SELECT ou
+// SEARCH roda com a trava de leitura e devolve também as colunas e as
+// linhas.
 func (s *server) execute(input string) response {
 	stmt, err := parse(input)
 	if err != nil {
 		return response{Error: err.Error()}
 	}
 
-	if sel, ok := stmt.(*parser.Select); ok {
+	var query func() (*selectResult, error)
+	switch st := stmt.(type) {
+	case *parser.Select:
+		query = func() (*selectResult, error) { return querySelect(s.db, st) }
+	case *parser.Search:
+		query = func() (*selectResult, error) { return querySearch(s.db, st) }
+	}
+	if query != nil {
 		s.mu.RLock()
-		r, err := querySelect(s.db, sel)
+		r, err := query()
 		s.mu.RUnlock()
 		if err != nil {
 			return response{Error: err.Error()}
