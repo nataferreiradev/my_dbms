@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"my_DBMS/internal/sql"
@@ -34,10 +35,12 @@ func Parse(tokens []sql.Token) (Statement, error) {
 func (p *parser) statement() (Statement, error) {
 	switch p.peek().Value {
 	case "CREATE":
-		if p.peekAt(1).Value == "INDEX" {
+		if p.peekAt(1).Value == "INDEX" || p.peekAt(1).Value == "VECTOR" {
 			return p.createIndex()
 		}
 		return p.createTable()
+	case "SEARCH":
+		return p.search()
 	case "INSERT":
 		return p.insert()
 	case "SELECT":
@@ -66,6 +69,7 @@ type parser struct {
 //
 //	CREATE TABLE nome (coluna TIPO [NOT NULL] [PRIMARY KEY | UNIQUE], ...,
 //	                   PRIMARY KEY (a, b), UNIQUE (c))
+//	                  [WITH EMBEDDING (a, b)]
 func (p *parser) createTable() (*CreateTable, error) {
 	if err := p.expect("CREATE", "TABLE"); err != nil {
 		return nil, err
@@ -88,7 +92,18 @@ func (p *parser) createTable() (*CreateTable, error) {
 		}
 		return p.columnDef(stmt)
 	})
-	return stmt, err
+	if err != nil {
+		return nil, err
+	}
+	if p.accept("WITH") {
+		if err := p.expect("EMBEDDING"); err != nil {
+			return nil, err
+		}
+		if stmt.Embedding, err = p.names(); err != nil {
+			return nil, err
+		}
+	}
+	return stmt, nil
 }
 
 // columnDef lê "nome TIPO" seguido de NOT NULL, PRIMARY KEY ou UNIQUE, em
@@ -302,9 +317,13 @@ func (p *parser) dropTable() (*DropTable, error) {
 	return &DropTable{Name: name}, err
 }
 
-// createIndex lê CREATE INDEX nome ON tabela (a, b).
+// createIndex lê CREATE [VECTOR] INDEX nome ON tabela (a, b).
 func (p *parser) createIndex() (*CreateIndex, error) {
-	if err := p.expect("CREATE", "INDEX"); err != nil {
+	if err := p.expect("CREATE"); err != nil {
+		return nil, err
+	}
+	vector := p.accept("VECTOR")
+	if err := p.expect("INDEX"); err != nil {
 		return nil, err
 	}
 	name, err := p.ident()
@@ -319,7 +338,36 @@ func (p *parser) createIndex() (*CreateIndex, error) {
 		return nil, err
 	}
 	columns, err := p.names()
-	return &CreateIndex{Name: name, Table: table, Columns: columns}, err
+	return &CreateIndex{Name: name, Table: table, Columns: columns, Vector: vector}, err
+}
+
+// search lê SEARCH tabela FOR 'texto' [TOP n].
+func (p *parser) search() (*Search, error) {
+	if err := p.expect("SEARCH"); err != nil {
+		return nil, err
+	}
+	table, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect("FOR"); err != nil {
+		return nil, err
+	}
+	query := p.peek()
+	if query.Type != sql.String {
+		return nil, p.unexpected("o texto da busca, entre aspas")
+	}
+	p.pos++
+	stmt := &Search{Table: table, Query: query.Value, Top: DefaultTop}
+	if p.accept("TOP") {
+		n, err := strconv.Atoi(p.peek().Value)
+		if p.peek().Type != sql.Number || err != nil || n <= 0 {
+			return nil, p.unexpected("um número inteiro maior que zero")
+		}
+		p.pos++
+		stmt.Top = n
+	}
+	return stmt, nil
 }
 
 // dropIndex lê DROP INDEX nome.

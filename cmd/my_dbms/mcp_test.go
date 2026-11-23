@@ -134,6 +134,7 @@ func TestMCPTools(t *testing.T) {
 		{tool: "query", sql: "EXPLAIN SELECT * FROM p WHERE id = 2;", want: "busca no índice p_pkey"},
 		{tool: "query", sql: "SELECT * FROM nada;", want: "não existe", wantIsError: true},
 		{tool: "query", sql: "SELEC * FROM p;", want: "não suportado", wantIsError: true},
+		{tool: "query", sql: "SEARCH p FOR 'Ana';", want: "não tem índice vetorial", wantIsError: true},
 		{tool: "schema", want: "p_pkey"},
 	}
 

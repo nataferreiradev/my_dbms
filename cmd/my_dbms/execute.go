@@ -49,7 +49,11 @@ func run(db *storage.DB, stmt parser.Statement) (string, error) {
 		}
 		return fmt.Sprintf("tabela %s removida", s.Name), nil
 	case *parser.CreateIndex:
-		if err := db.CreateIndex(s.Name, s.Table, s.Columns); err != nil {
+		create := db.CreateIndex
+		if s.Vector {
+			create = db.CreateVectorIndex
+		}
+		if err := create(s.Name, s.Table, s.Columns); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("índice %s criado", s.Name), nil
@@ -60,6 +64,12 @@ func run(db *storage.DB, stmt parser.Statement) (string, error) {
 		return fmt.Sprintf("índice %s removido", s.Name), nil
 	case *parser.Explain:
 		return explain(db, s)
+	case *parser.Search:
+		r, err := querySearch(db, s)
+		if err != nil {
+			return "", err
+		}
+		return r.format(), nil
 	}
 	return "", fmt.Errorf("comando não suportado: %T", stmt)
 }
@@ -75,6 +85,9 @@ func createTable(db *storage.DB, s *parser.CreateTable) (string, error) {
 		if k.Primary {
 			keys[i].Kind = storage.PrimaryKey
 		}
+	}
+	if s.Embedding != nil {
+		keys = append(keys, storage.Index{Kind: storage.VectorIndex, Columns: s.Embedding})
 	}
 
 	if err := db.CreateTable(s.Name, columns, keys); err != nil {
@@ -450,6 +463,25 @@ func resultColumns(sc scope, indexes []int) []storage.Column {
 		columns[j] = storage.Column{Name: name, Type: c.Type}
 	}
 	return columns
+}
+
+// querySearch roda o SEARCH: as linhas mais parecidas com o texto, da mais
+// para a menos parecida, com a similaridade (o cosseno, até 1) na frente.
+func querySearch(db *storage.DB, s *parser.Search) (*selectResult, error) {
+	schema, err := db.TableSchema(s.Table)
+	if err != nil {
+		return nil, err
+	}
+	results, err := db.Search(s.Table, s.Query, s.Top)
+	if err != nil {
+		return nil, err
+	}
+	r := &selectResult{Columns: append([]storage.Column{{Name: "similarity", Type: "REAL"}}, schema.Columns...)}
+	for _, res := range results {
+		similarity := storage.Text(strconv.FormatFloat(res.Similarity, 'f', 3, 64))
+		r.Rows = append(r.Rows, append([]storage.Value{similarity}, res.Values...))
+	}
+	return r, nil
 }
 
 // format desenha o resultado como o texto que o REPL imprime.

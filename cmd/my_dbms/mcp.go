@@ -56,7 +56,8 @@ var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05
 
 const mcpInstructions = `my_dbms é um banco relacional pequeno, de estudo. Use a ferramenta schema para ver as tabelas antes de consultar.
 O SQL aceito é limitado: SELECT com WHERE (=, <>, <, >, <=, >=, IS [NOT] NULL, AND, OR), [INNER|LEFT|RIGHT] JOIN ... ON e colunas como tabela.coluna.
-Ainda não há ORDER BY, LIMIT, GROUP BY, funções de agregação nem alias. Tipos: INT, REAL, TEXT, BOOLEAN. Um comando por chamada.`
+Ainda não há ORDER BY, LIMIT, GROUP BY, funções de agregação nem alias. Tipos: INT, REAL, TEXT, BOOLEAN. Um comando por chamada.
+Busca por significado: SEARCH tabela FOR 'texto' [TOP n] devolve as linhas mais parecidas, com a similaridade. Só funciona em tabelas com índice vetorial (no schema, linhas com type = vector); prefira SEARCH a WHERE quando a pergunta for sobre o assunto do texto, e não sobre um valor exato.`
 
 type mcpTool struct {
 	Name        string         `json:"name"`
@@ -84,7 +85,7 @@ func (m *mcpServer) tools() []mcpTool {
 		},
 		{
 			Name:        "query",
-			Description: "Roda um SELECT ou um EXPLAIN e devolve o resultado como tabela de texto. Não altera nada.",
+			Description: "Roda um SELECT, um SEARCH (busca por significado: SEARCH tabela FOR 'texto' TOP 5) ou um EXPLAIN e devolve o resultado como tabela de texto. Não altera nada.",
 			InputSchema: sqlInput,
 			Annotations: map[string]any{"readOnlyHint": true},
 		},
@@ -92,7 +93,7 @@ func (m *mcpServer) tools() []mcpTool {
 	if m.write {
 		tools = append(tools, mcpTool{
 			Name:        "execute",
-			Description: "Roda qualquer comando SQL: CREATE TABLE, INSERT, UPDATE, DELETE, CREATE INDEX, DROP. Cada comando é uma transação.",
+			Description: "Roda qualquer comando SQL: CREATE TABLE (com WITH EMBEDDING (colunas) para busca por significado), INSERT, UPDATE, DELETE, CREATE [VECTOR] INDEX, DROP. Cada comando é uma transação.",
 			InputSchema: sqlInput,
 			Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true},
 		})
@@ -191,12 +192,12 @@ func (m *mcpServer) runTool(name, input string) (string, error) {
 	}
 	if name == "query" {
 		switch stmt.(type) {
-		case *parser.Select, *parser.Explain:
+		case *parser.Select, *parser.Explain, *parser.Search:
 		default:
 			if m.write {
-				return "", errors.New("a ferramenta query só roda SELECT e EXPLAIN; para alterar o banco, use execute")
+				return "", errors.New("a ferramenta query só roda SELECT, SEARCH e EXPLAIN; para alterar o banco, use execute")
 			}
-			return "", errors.New("a ferramenta query só roda SELECT e EXPLAIN, e este servidor não aceita alterações (suba com -mcp-write para liberar)")
+			return "", errors.New("a ferramenta query só roda SELECT, SEARCH e EXPLAIN, e este servidor não aceita alterações (suba com -mcp-write para liberar)")
 		}
 	}
 	return run(m.db, stmt)
