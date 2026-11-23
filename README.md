@@ -88,8 +88,26 @@ claude mcp add my_dbms -- ./my_dbms.exe -mcp
 ```
 
 Com `-mcp`, um assistente de IA (Claude Code, Claude Desktop) enxerga o
-schema e roda `SELECT` no banco. Com `-mcp-write`, também pode alterar. Veja
-[docs/estrutura.md](docs/estrutura.md#por-ia-mcp).
+schema e roda `SELECT` e `SEARCH` no banco. Com `-mcp-write`, também pode
+alterar. Veja [docs/estrutura.md](docs/estrutura.md#por-ia-mcp).
+
+## Busca por significado
+
+Uma tabela pode se vetorizar sozinha: basta dizer quais colunas entram no
+embedding, e `INSERT`, `UPDATE` e `DELETE` cuidam dos vetores.
+
+```
+go run ./cmd/my_dbms -setup    # escolhe a API (Ollama local, OpenAI, Voyage, Gemini...)
+```
+
+```sql
+CREATE TABLE docs (id INT PRIMARY KEY, titulo TEXT, corpo TEXT) WITH EMBEDDING (titulo, corpo);
+INSERT INTO docs VALUES (1, 'Gato e banho', 'meu gato foge quando vê a banheira');
+SEARCH docs FOR 'gatos com medo de água' TOP 5;
+```
+
+A chave da API fica no arquivo de credenciais do seu usuário, nunca no
+`my_dbms.conf`. Veja [docs/estrutura.md](docs/estrutura.md#índice-vetorial-e-search).
 
 ## Mais exemplos
 

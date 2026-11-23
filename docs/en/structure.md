@@ -25,11 +25,18 @@ my_dbms/
 │   ├── web_test.go
 │   ├── mcp.go            → MCP server on stdin/stdout, for AI assistants
 │   ├── mcp_test.go
+│   ├── setup.go          → the -setup wizard: picks the embeddings API and stores the key
+│   ├── setup_test.go
+│   ├── search_test.go    → tests of WITH EMBEDDING, CREATE VECTOR INDEX and SEARCH
 │   └── bench_test.go     → benchmark of SELECT by key
 ├── internal/
 │   ├── config/           → database parameters
-│   │   ├── config.go     → Config, Default(), Load(): reads my_dbms.conf
+│   │   ├── config.go     → Config, Default(), Load(): reads my_dbms.conf; Save() writes it;
+│   │   │                   APIKey(), SaveAPIKey(): the user's credentials file
 │   │   └── config_test.go
+│   ├── embed/            → embeddings: text → vector
+│   │   ├── embed.go      → Client: calls an OpenAI-style API; Fake() for tests
+│   │   └── embed_test.go
 │   ├── sql/              → lexical analysis of SQL
 │   │   ├── token.go      → Token, TokenType, keywords, operators, symbols
 │   │   ├── lexer.go      → Lex(): string → []Token
@@ -52,6 +59,8 @@ my_dbms/
 │       ├── key.go        → encoding of index keys into bytes that sort correctly
 │       ├── index.go      → indexes: maintenance, uniqueness, CreateIndex, DropIndex, IndexScan
 │       ├── index_test.go
+│       ├── vector.go     → vector index: int8 vectors, maintenance, CreateVectorIndex, Search
+│       ├── vector_test.go
 │       ├── system.go     → system tables built in memory: _settings, _tables, _indexes
 │       ├── system_test.go
 │       └── bench_test.go → benchmarks of INSERT with a key and of reading a table
@@ -76,10 +85,36 @@ file doesn't exist, the defaults from `config.Default()` apply.
 |---|---|---|
 | `data_dir` | `data` | Folder for the table files. A relative path starts from the folder the program runs in. |
 | `page_size` | `4096` | Size of the file pages, in bytes: a power of 2 between 1024 and 32768. It is stored in the database when the database is created; opening an existing database with a different value is an error. |
+| `embedding_url` | empty | Base address of an OpenAI-style embeddings API, like `https://api.openai.com/v1`. Empty turns vector indexes off. See [Vector index](#vector-index-and-search). |
+| `embedding_model` | empty | Model requested from the API, like `text-embedding-3-small`. Required with `embedding_url`. |
 
 To add a parameter: a field in `Config`, the default value in `Default()`, a
 `case` in `Load()` and a commented line in `my_dbms.conf`. An unknown key is
 an error, so a typo doesn't slip by silently.
+
+`my_dbms.conf` is committed to git, so **the API key never goes in it**: a
+parameter with `key` in its name is rejected. The key lives in the user's
+credentials file (`config.CredentialsPath()`: `%AppData%\my_dbms\credentials`
+on Windows, `~/.config/my_dbms/credentials` on Linux), outside the project,
+with `0600` permissions (on Windows, the profile folder protects it, since
+other users can't read it). The file stores the key together with the API
+address, and the key is only used with that address: changing
+`embedding_url` by hand doesn't send the key to another server. The
+`MY_DBMS_API_KEY` variable takes precedence over the file, which is handy in
+Docker and CI.
+
+The `-setup` wizard fills all of this in:
+
+```
+go run ./cmd/my_dbms -setup
+```
+
+It lists the providers (local Ollama with no key, OpenAI, Voyage, Gemini or
+any other OpenAI-style API), asks for the address, model and key (hidden
+while typing), **tests the connection** by requesting an embedding and checks
+that the vectors fit in a page. It only saves if the test passes, or if the
+user confirms. Run again, the current settings become the defaults. Hidden
+typing uses `golang.org/x/term`, the project's only dependency.
 
 ## Accepted SQL
 
@@ -95,6 +130,9 @@ CREATE INDEX p_nome ON p (nome);
 EXPLAIN SELECT * FROM p WHERE nome = 'Ana';
 DROP INDEX p_nome;
 DROP TABLE p;
+CREATE TABLE docs (id INT PRIMARY KEY, titulo TEXT, corpo TEXT) WITH EMBEDDING (titulo, corpo);
+CREATE VECTOR INDEX p_vec ON p (nome);
+SEARCH docs FOR 'gatos com medo de água' TOP 5;
 ```
 
 - Types: `INT` (64-bit integer), `REAL` (64-bit floating point), `TEXT` and
@@ -116,6 +154,8 @@ DROP TABLE p;
 - `CREATE INDEX` creates a (non-unique) B+tree index, and `EXPLAIN` shows
   whether a `SELECT`, `UPDATE` or `DELETE` will use an index or read the
   whole table. See [Indexes](#indexes).
+- `WITH EMBEDDING` and `CREATE VECTOR INDEX` create the vector index, and
+  `SEARCH` searches by meaning. See [Vector index](#vector-index-and-search).
 
 ## Server
 
@@ -194,7 +234,7 @@ The assistant sees these tools:
 | Tool | Does |
 |---|---|
 | `schema` | Shows `_catalog`: the tables, columns and keys. |
-| `query` | Runs a `SELECT` or an `EXPLAIN`. Any other command is refused. |
+| `query` | Runs a `SELECT`, a `SEARCH` or an `EXPLAIN`. Any other command is refused. |
 | `execute` | Runs any command. Only exists with `-mcp-write`. |
 
 Without `-mcp-write`, the AI can't change anything. A command's error comes
@@ -246,7 +286,8 @@ another process.
 | `internal/sql` | Turns text into classified tokens. Normalizes keywords to uppercase and strips quotes from strings. | Know that disks or tables exist. |
 | `internal/parser` | Checks the grammar and turns tokens into an AST (`Statement`). Syntax errors come from here, with the position. | Know whether the table or column exists. |
 | `internal/config` | Reads the parameter file and applies defaults. | Open the database or know about SQL. |
-| `internal/storage` | Defines the on-disk format, maintains the catalog, stores and reads rows by address (RID), maintains the B+tree indexes and runs every operation in a transaction with a journal. | Know about SQL. It receives names and values that are already validated. |
+| `internal/storage` | Defines the on-disk format, maintains the catalog, stores and reads rows by address (RID), maintains the B+tree and vector indexes and runs every operation in a transaction with a journal. | Know about SQL or HTTP: it receives names and values that are already validated, and embeddings come from the `DB.Embed` function. |
+| `internal/embed` | Turns texts into vectors by calling an OpenAI-style embeddings API, in batches. | Know about tables or disks. |
 | `cmd/my_dbms` | Connects everything: takes the line, calls `Lex` and `Parse`, runs the `Statement` against the schema, picks the plan (index or scan), calls storage and formats the output. Also serves clients over TCP (`server.go`). | Implement file-format or grammar rules. |
 
 `internal/` prevents code outside the module from importing these packages,
@@ -375,6 +416,7 @@ index       | pessoas_nome      | pessoas    | nome
 | `primary_key` | Primary key columns: `id` or `a,b`. At most one per table. |
 | `unique` | Columns of a unique key. |
 | `index` | Columns of an index created with `CREATE INDEX`. |
+| `vector` | Columns of the vector index (`WITH EMBEDDING` or `CREATE VECTOR INDEX`). At most one per table. |
 
 The `type` column is the discriminator: it says what kind of object the line
 describes. A new object (foreign key, view) is a new `type` value and a
@@ -435,7 +477,8 @@ p_idade | p          | index       | idade   |     1 |      1
 - `_tables`: one row per table on disk, with the row count, the data pages
   (not counting page 0) and the file size in bytes.
 - `_indexes`: one row per index, with its pages and the B+tree **height** (1
-  while the root is still the only leaf).
+  while the root is still the only leaf). The vector index isn't a tree: its
+  height is `NULL`.
 
 To add another system table: its name and schema in `system.go`, the schema
 in the `tables` map in `Open`, the name in `isVirtual` and a `case` in
@@ -613,6 +656,92 @@ my_dbms> EXPLAIN SELECT * FROM pessoas LEFT JOIN pedidos ON pessoas.id = pessoa_
 varredura completa na tabela pessoas
 LEFT JOIN por nested loop: varredura completa na tabela pedidos
 ```
+
+## Vector index and SEARCH
+
+The vector index stores an **embedding** of each row (a vector that
+represents the meaning of the text) for searching by meaning:
+
+```sql
+CREATE TABLE docs (id INT PRIMARY KEY, titulo TEXT, corpo TEXT) WITH EMBEDDING (titulo, corpo);
+INSERT INTO docs VALUES (1, 'Gato e banho', 'meu gato foge quando vê a banheira');
+SEARCH docs FOR 'gatos com medo de água' TOP 5;
+```
+
+```
+similarity | id | titulo       | corpo
+-----------+----+--------------+-----------------------------------
+     0.812 |  1 | Gato e banho | meu gato foge quando vê a banheira
+(1 linha)
+```
+
+(The exact similarity depends on the embeddings model.)
+
+- `WITH EMBEDDING (columns)` at the end of `CREATE TABLE` creates the index
+  `<table>_embedding`; `CREATE VECTOR INDEX name ON table (columns)` creates
+  one on an existing table and computes the vectors of the rows it already
+  has. Each table has at most one vector index, removed with `DROP INDEX`.
+- After that, nobody touches vectors: `INSERT`, `UPDATE` and `DELETE`
+  maintain the index by themselves, in the same transaction as the row.
+- The text of each row is `column: value`, one column per line, skipping
+  `NULL`s. A row whose index columns are all `NULL` has no vector and doesn't
+  show up in `SEARCH`.
+- `SEARCH table FOR 'text' [TOP n]` returns the `n` most similar rows (10
+  without `TOP`), most similar first, with a `similarity` column in front:
+  the cosine between the vectors, which goes up to 1. `SEARCH` has no
+  `WHERE` yet. Over the server it runs under the read lock, and over MCP in
+  the `query` tool.
+- `VECTOR`, `WITH`, `EMBEDDING`, `SEARCH`, `FOR` and `TOP` became keywords
+  and can no longer be used as table or column names.
+
+### Where vectors come from
+
+Storage doesn't speak HTTP: vectors are computed by the `DB.Embed` function,
+which `main.go` wires to an `embed.Client` with the address, model and key
+from [`-setup`](#configuration). The `Client` speaks the OpenAI format
+(`POST <url>/embeddings`), which OpenAI, Voyage, Gemini, Ollama and LM Studio
+understand, and sends texts in batches of 64. In tests, `embed.Fake` builds
+vectors without a network: each word adds 1 at a position picked by a hash,
+so texts that share words come out similar.
+
+Computing is **synchronous**: an `INSERT` only finishes after the API
+returns the vectors, and if it fails, nothing is written. Vectors are
+requested **before** the transaction opens, so no changed page sits in
+memory waiting on the network (on the server, the command still holds the
+write lock, like any write). An `UPDATE` that doesn't change the text of the
+index columns reuses the stored vector without calling the API. With no API
+configured, creating the table works, but an `INSERT` into it fails asking
+for `-setup`.
+
+### Format
+
+The index is a `<name>.mari` file with heap pages, like a table, and one
+record per row:
+
+```
+row RID (6 bytes) | one dimension per byte (int8)
+```
+
+Vectors are stored as **int8**: each dimension is divided by the largest in
+absolute value and multiplied by 127. Cosine only compares the direction of
+the vectors, not their length, and the direction barely changes. As float32,
+a 1536-dimension vector (`text-embedding-3-small`) would take 6 KB and not
+fit a 4 KB page; as int8 it takes 1542 bytes. The maximum is
+`page_size − 20` dimensions (4076 with 4 KB pages); a larger vector is
+rejected with an error, and `-setup` warns ahead of time. If the model
+changes and the dimensions don't match the index, `INSERT` and `SEARCH`
+fail asking to recreate the index.
+
+### Search
+
+`SEARCH` is **brute force**: it computes the query vector, reads the whole
+index file, computes the cosine with each vector and returns the `k`
+largest. Up to tens of thousands of rows this is fast; an approximate index
+(like HNSW) can come when the code asks for it.
+
+Nothing leads from a RID to its vector record, so deleting or replacing
+vectors (`DELETE`, `UPDATE`) also scans the file, once per command. Since
+search is already linear, this doesn't change the order of the cost.
 
 ## Adding a command
 
