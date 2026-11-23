@@ -60,8 +60,10 @@ func (db *DB) embed(texts []string) ([][]float32, error) {
 }
 
 // embedRows calcula o vetor de cada linha, já quantizado, antes de a
-// transação abrir: a API pode demorar, e nada fica travado esperando por
-// ela. Uma linha sem texto fica com nil. Só os índices de rows em which são
+// transação abrir: a API pode demorar e falhar, e assim nenhuma página
+// alterada fica na memória esperando por ela. (No servidor, o comando ainda
+// segura a trava de escrita, porque escritas rodam uma por vez de qualquer
+// jeito.) Uma linha sem texto fica com nil. Só os índices de rows em which são
 // calculados; which nil é todas.
 func (db *DB) embedRows(schema Schema, rows [][]Value, which []int) ([][]byte, error) {
 	if which == nil {
@@ -102,10 +104,17 @@ func (db *DB) embedRows(schema Schema, rows [][]Value, which []int) ([][]byte, e
 	return quantized, nil
 }
 
+// MaxVectorDims é o maior número de dimensões de um vetor com páginas de
+// pageSize bytes: o registro dele (RID e um byte por dimensão) tem que caber
+// numa página.
+func MaxVectorDims(pageSize int) int {
+	return maxRecordSize(pageSize) - ridSize
+}
+
 // checkDims confere se um vetor de got dimensões cabe no índice, que tem
 // vetores de want dimensões (0 se está vazio).
 func (db *DB) checkDims(index string, want, got int) error {
-	if max := maxRecordSize(db.pageSize) - ridSize; got > max {
+	if max := MaxVectorDims(db.pageSize); got > max {
 		return fmt.Errorf("o modelo devolveu vetores de %d dimensões, mas uma página de %d bytes guarda no máximo %d: use um page_size maior ou um modelo menor",
 			got, db.pageSize, max)
 	}
