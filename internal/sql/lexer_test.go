@@ -70,6 +70,26 @@ func TestLex(t *testing.T) {
 			},
 		},
 		{
+			input: "p.id=c.pessoa_id",
+			want:  []Token{{Identifier, "p.id", 0}, {Operator, "=", 4}, {Identifier, "c.pessoa_id", 5}},
+		},
+		{
+			input: "a left outer join b inner Join c right JOIN d",
+			want: []Token{
+				{Identifier, "a", 0},
+				{Keyword, "LEFT", 2},
+				{Keyword, "OUTER", 7},
+				{Keyword, "JOIN", 13},
+				{Identifier, "b", 18},
+				{Keyword, "INNER", 20},
+				{Keyword, "JOIN", 26},
+				{Identifier, "c", 31},
+				{Keyword, "RIGHT", 33},
+				{Keyword, "JOIN", 39},
+				{Identifier, "d", 44},
+			},
+		},
+		{
 			input: `'Ana','it''s'`,
 			want:  []Token{{String, "Ana", 0}, {Symbol, ",", 5}, {String, "it's", 6}},
 		},
@@ -102,6 +122,9 @@ func TestLexInvalid(t *testing.T) {
 		"1.",
 		".5",
 		"é = 1",
+		"p.",
+		"a.b.c",
+		"p.1",
 	}
 	for _, input := range inputs {
 		if _, err := Lex(input); err == nil {
@@ -127,6 +150,7 @@ func FuzzLex(f *testing.F) {
 		`INSERT INTO t VALUES (1, "a"), (-2, NULL);`,
 		"'sem fim",
 		"ção = 1",
+		"SELECT p.id FROM p LEFT JOIN q ON p.id = q.p_id",
 	} {
 		f.Add(s)
 	}

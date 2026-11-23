@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"my_DBMS/internal/sql"
 )
@@ -171,8 +172,8 @@ func (p *parser) insert() (*Insert, error) {
 	}
 }
 
-// selectStmt lê SELECT * FROM tabela ou SELECT a, b FROM tabela, com WHERE
-// opcional.
+// selectStmt lê SELECT * FROM tabela ou SELECT a, t.b FROM tabela, com JOINs
+// e WHERE opcionais.
 func (p *parser) selectStmt() (*Select, error) {
 	if err := p.expect("SELECT"); err != nil {
 		return nil, err
@@ -180,11 +181,11 @@ func (p *parser) selectStmt() (*Select, error) {
 	stmt := &Select{}
 	if !p.accept("*") {
 		for {
-			name, err := p.ident()
+			col, err := p.columnRef()
 			if err != nil {
 				return nil, err
 			}
-			stmt.Columns = append(stmt.Columns, name)
+			stmt.Columns = append(stmt.Columns, col)
 			if !p.accept(",") {
 				break
 			}
@@ -198,8 +199,49 @@ func (p *parser) selectStmt() (*Select, error) {
 		return nil, err
 	}
 	stmt.Table = table
+	if stmt.Joins, err = p.joins(); err != nil {
+		return nil, err
+	}
 	stmt.Where, err = p.where()
 	return stmt, err
+}
+
+// joins lê os JOINs que vierem depois do FROM, cada um com o seu ON:
+//
+//	[INNER] JOIN t ON condição
+//	LEFT [OUTER] JOIN t ON condição
+//	RIGHT [OUTER] JOIN t ON condição
+func (p *parser) joins() ([]Join, error) {
+	var joins []Join
+	for {
+		kind := "INNER"
+		switch {
+		case p.accept("LEFT"):
+			kind = "LEFT"
+			p.accept("OUTER")
+		case p.accept("RIGHT"):
+			kind = "RIGHT"
+			p.accept("OUTER")
+		case p.accept("INNER"):
+		case p.peek().Value != "JOIN":
+			return joins, nil
+		}
+		if err := p.expect("JOIN"); err != nil {
+			return nil, err
+		}
+		table, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect("ON"); err != nil {
+			return nil, err
+		}
+		on, err := p.or()
+		if err != nil {
+			return nil, err
+		}
+		joins = append(joins, Join{Kind: kind, Table: table, On: on})
+	}
 }
 
 // update lê UPDATE tabela SET a = valor, b = valor [WHERE condição].
@@ -378,8 +420,7 @@ func (p *parser) comparison() (Expr, error) {
 // operand lê um nome de coluna ou um valor.
 func (p *parser) operand() (Expr, error) {
 	if p.peek().Type == sql.Identifier {
-		name, err := p.ident()
-		return ColumnRef{Name: name}, err
+		return p.columnRef()
 	}
 	lit, err := p.literal()
 	if err != nil {
@@ -475,14 +516,28 @@ func (p *parser) expect(values ...string) error {
 	return nil
 }
 
-// ident consome um nome (de tabela ou coluna).
+// ident consome um nome simples (de tabela, coluna ou índice), sem ponto.
 func (p *parser) ident() (string, error) {
 	t := p.peek()
-	if t.Type != sql.Identifier {
+	if t.Type != sql.Identifier || strings.Contains(t.Value, ".") {
 		return "", p.unexpected("um nome")
 	}
 	p.pos++
 	return t.Value, nil
+}
+
+// columnRef consome uma coluna: nome ou tabela.nome. O lexer já garantiu
+// que há no máximo um ponto, com um nome de cada lado.
+func (p *parser) columnRef() (ColumnRef, error) {
+	t := p.peek()
+	if t.Type != sql.Identifier {
+		return ColumnRef{}, p.unexpected("um nome")
+	}
+	p.pos++
+	if table, name, ok := strings.Cut(t.Value, "."); ok {
+		return ColumnRef{Table: table, Name: name}, nil
+	}
+	return ColumnRef{Name: t.Value}, nil
 }
 
 // unexpected monta o erro "esperava X, veio Y" com a posição do token atual.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,7 +141,7 @@ func update(db *storage.DB, s *parser.Update) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, schema)
+	where, err := compileWhere(s.Where, tableScope(s.Table, schema))
 	if err != nil {
 		return "", err
 	}
@@ -192,7 +193,7 @@ func deleteRows(db *storage.DB, s *parser.Delete) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	where, err := compileWhere(s.Where, schema)
+	where, err := compileWhere(s.Where, tableScope(s.Table, schema))
 	if err != nil {
 		return "", err
 	}
@@ -221,6 +222,9 @@ func explain(db *storage.DB, s *parser.Explain) (string, error) {
 	var where parser.Expr
 	switch st := s.Statement.(type) {
 	case *parser.Select:
+		if len(st.Joins) > 0 {
+			return explainJoin(db, st)
+		}
 		table, where = st.Table, st.Where
 	case *parser.Update:
 		table, where = st.Table, st.Where
@@ -233,7 +237,7 @@ func explain(db *storage.DB, s *parser.Explain) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := compileWhere(where, schema); err != nil {
+	if _, err := compileWhere(where, tableScope(table, schema)); err != nil {
 		return "", err
 	}
 	return choosePlan(table, schema, where).String(), nil
@@ -308,51 +312,144 @@ func selectRows(db *storage.DB, s *parser.Select) (string, error) {
 	return r.format(), nil
 }
 
-// querySelect lê as linhas pelo plano escolhido, filtra pelo WHERE e escolhe
-// as colunas pedidas.
+// querySelect lê as linhas (de uma tabela pelo plano escolhido, ou já
+// juntadas pelos JOINs), filtra pelo WHERE e escolhe as colunas pedidas.
 func querySelect(db *storage.DB, s *parser.Select) (*selectResult, error) {
-	table, err := db.TableSchema(s.Table)
-	if err != nil {
-		return nil, err
-	}
-	where, err := compileWhere(s.Where, table)
+	q, err := compileSelect(db, s)
 	if err != nil {
 		return nil, err
 	}
 
-	// indexes diz quais colunas da tabela entram no resultado, em ordem.
-	var indexes []int
-	if s.Columns == nil {
-		for i := range table.Columns {
-			indexes = append(indexes, i)
-		}
-	}
-	for _, name := range s.Columns {
-		i := table.ColumnIndex(name)
-		if i < 0 {
-			return nil, fmt.Errorf("coluna %q não existe na tabela %s", name, s.Table)
-		}
-		indexes = append(indexes, i)
-	}
-
-	r := &selectResult{}
-	for _, i := range indexes {
-		r.Columns = append(r.Columns, table.Columns[i])
-	}
-	for row, err := range choosePlan(s.Table, table, s.Where).rows(db) {
+	r := &selectResult{Columns: resultColumns(q.scope, q.indexes)}
+	for row, err := range q.rows(db) {
 		if err != nil {
 			return nil, err
 		}
-		if where(row.Values) != triTrue {
+		if q.where(row) != triTrue {
 			continue
 		}
-		picked := make([]storage.Value, len(indexes))
-		for j, i := range indexes {
-			picked[j] = row.Values[i]
+		picked := make([]storage.Value, len(q.indexes))
+		for j, i := range q.indexes {
+			picked[j] = row[i]
 		}
 		r.Rows = append(r.Rows, picked)
 	}
 	return r, nil
+}
+
+// selectQuery é um SELECT já conferido contra os schemas: as tabelas e
+// colunas existem, os tipos batem e as condições viraram predicados.
+type selectQuery struct {
+	stmt    *parser.Select
+	schema  storage.Schema // da tabela do FROM, para o choosePlan
+	scope   scope          // as colunas do FROM e dos JOINs, nessa ordem
+	widths  []int          // quantas colunas tem a tabela de cada JOIN
+	ons     []predicate    // o ON de cada JOIN
+	where   predicate
+	indexes []int // as posições no scope das colunas do resultado
+}
+
+// compileSelect confere tudo antes de ler qualquer linha, para o erro
+// aparecer mesmo com as tabelas vazias. O ON de um JOIN enxerga só as
+// tabelas que vieram antes dele; o WHERE e as colunas do SELECT enxergam
+// todas.
+func compileSelect(db *storage.DB, s *parser.Select) (*selectQuery, error) {
+	schema, err := db.TableSchema(s.Table)
+	if err != nil {
+		return nil, err
+	}
+	q := &selectQuery{stmt: s, schema: schema, scope: tableScope(s.Table, schema)}
+
+	for _, j := range s.Joins {
+		if slices.Contains(q.scope.tables, j.Table) {
+			return nil, fmt.Errorf("tabela %s aparece duas vezes no FROM (alias ainda não é suportado)", j.Table)
+		}
+		right, err := db.TableSchema(j.Table)
+		if err != nil {
+			return nil, err
+		}
+		q.scope = q.scope.join(tableScope(j.Table, right))
+		q.widths = append(q.widths, len(right.Columns))
+		on, err := compileWhere(j.On, q.scope)
+		if err != nil {
+			return nil, fmt.Errorf("ON do JOIN com %s: %w", j.Table, err)
+		}
+		q.ons = append(q.ons, on)
+	}
+
+	if q.where, err = compileWhere(s.Where, q.scope); err != nil {
+		return nil, err
+	}
+	if q.indexes, err = projection(q.scope, s.Columns); err != nil {
+		return nil, err
+	}
+	return q, nil
+}
+
+// rows devolve as linhas antes do WHERE. Sem JOIN, vêm da tabela pelo plano
+// escolhido (que pode usar um índice). Com JOIN, vêm já juntadas por
+// joinRows.
+func (q *selectQuery) rows(db *storage.DB) iter.Seq2[[]storage.Value, error] {
+	return func(yield func([]storage.Value, error) bool) {
+		if len(q.stmt.Joins) == 0 {
+			for row, err := range choosePlan(q.stmt.Table, q.schema, q.stmt.Where).rows(db) {
+				if !yield(row.Values, err) || err != nil {
+					return
+				}
+			}
+			return
+		}
+		rows, err := q.joinRows(db)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for _, row := range rows {
+			if !yield(row, nil) {
+				return
+			}
+		}
+	}
+}
+
+// projection diz quais colunas do escopo entram no resultado, em ordem.
+// columns nil é o *: todas, na ordem do escopo.
+func projection(sc scope, columns []parser.ColumnRef) ([]int, error) {
+	var indexes []int
+	if columns == nil {
+		for i := range sc.columns {
+			indexes = append(indexes, i)
+		}
+	}
+	for _, ref := range columns {
+		i, err := sc.find(ref)
+		if err != nil {
+			return nil, err
+		}
+		indexes = append(indexes, i)
+	}
+	return indexes, nil
+}
+
+// resultColumns monta as colunas do resultado. O nome ganha a tabela na
+// frente (pessoas.id) só quando outra coluna do resultado, de outra tabela,
+// tem o mesmo nome; sem isso, o cabeçalho de um SELECT com JOIN teria dois
+// "id" sem dizer qual é qual. NOT NULL não é copiado, porque um JOIN externo
+// preenche com NULL até coluna NOT NULL.
+func resultColumns(sc scope, indexes []int) []storage.Column {
+	columns := make([]storage.Column, len(indexes))
+	for j, i := range indexes {
+		c := sc.columns[i]
+		name := c.Name
+		for _, k := range indexes {
+			if sc.columns[k].Name == c.Name && sc.tables[k] != sc.tables[i] {
+				name = sc.tables[i] + "." + c.Name
+				break
+			}
+		}
+		columns[j] = storage.Column{Name: name, Type: c.Type}
+	}
+	return columns
 }
 
 // format desenha o resultado como o texto que o REPL imprime.

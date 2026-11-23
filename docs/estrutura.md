@@ -11,7 +11,10 @@ my_dbms/
 │   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen ou -http, sobe o servidor
 │   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
-│   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha
+│   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha;
+│   │                       scope: as colunas visíveis e de que tabela é cada uma
+│   ├── join.go           → JOIN por nested loop e o texto do EXPLAIN de um JOIN
+│   ├── join_test.go
 │   ├── plan.go           → choosePlan(): varredura completa ou índice, e o texto do EXPLAIN
 │   ├── format.go         → desenha o resultado do SELECT como tabela
 │   ├── format_test.go
@@ -84,6 +87,7 @@ INSERT INTO p (nome, id) VALUES ('Caio', 3);
 SELECT * FROM p WHERE (id > 1 OR email IS NULL) AND nome <> 'Bia';
 UPDATE p SET email = 'ana@x' WHERE id = 1;
 DELETE FROM p WHERE email IS NULL;
+SELECT p.nome, pedidos.item FROM p LEFT JOIN pedidos ON p.id = pedidos.pessoa_id;
 CREATE INDEX p_nome ON p (nome);
 EXPLAIN SELECT * FROM p WHERE nome = 'Ana';
 DROP INDEX p_nome;
@@ -101,6 +105,9 @@ DROP TABLE p;
 - `WHERE`: `=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `AND`, `OR` e
   parênteses. Comparar com `NULL` dá "desconhecido" e a linha não passa, como
   no SQL padrão; use `IS NULL`.
+- Colunas podem vir qualificadas pela tabela (`p.id`) no `SELECT` e nas
+  condições. `[INNER] JOIN`, `LEFT [OUTER] JOIN` e `RIGHT [OUTER] JOIN`
+  juntam tabelas no `SELECT`. Veja [JOIN](#join).
 - `INSERT`, `UPDATE` e `DELETE` gravam todas as linhas ou nenhuma: cada
   comando é uma transação.
 - `CREATE INDEX` cria um índice B+tree (não único) e `EXPLAIN` mostra se um
@@ -502,7 +509,8 @@ bits invertidos, o que também desliga o bit de sinal. O terminador
 ### Escolha do plano
 
 O `choosePlan` (`cmd/my_dbms/plan.go`) decide como um `SELECT`, `UPDATE` ou
-`DELETE` lê as linhas. Ele olha só as comparações `coluna op valor` ligadas
+`DELETE` lê as linhas (um `SELECT` com JOIN não passa por ele: veja
+[JOIN](#join)). Ele olha só as comparações `coluna op valor` ligadas
 por `AND` no nível de cima do `WHERE` (com `OR`, uma linha pode passar pelo
 lado que o índice não cobre):
 
@@ -523,6 +531,55 @@ my_dbms> EXPLAIN SELECT * FROM p WHERE idade = 30 OR id = 1;
 varredura completa na tabela p
 ```
 
+## JOIN
+
+```sql
+SELECT pessoas.nome, pedidos.item
+FROM pessoas
+LEFT JOIN pedidos ON pessoas.id = pedidos.pessoa_id
+WHERE pedidos.id IS NULL;   -- as pessoas sem pedido
+```
+
+- `[INNER] JOIN`, `LEFT [OUTER] JOIN` e `RIGHT [OUTER] JOIN`, cada um com o
+  seu `ON`. Vários JOINs são juntados da esquerda para a direita:
+  `a JOIN b ON … LEFT JOIN c ON …` é `(a JOIN b) LEFT JOIN c`.
+- Uma coluna pode vir como `tabela.coluna` no `SELECT`, no `ON` e no `WHERE`
+  (com ou sem JOIN). Sem a tabela, o nome precisa existir numa tabela só; se
+  estiver em duas, é erro de coluna ambígua. Quem resolve os nomes é o
+  `scope` (`cmd/my_dbms/where.go`): as colunas de todas as tabelas, uma
+  depois da outra, e a tabela de cada uma.
+- O `ON` enxerga só as tabelas que vieram antes dele; o `WHERE` e as colunas
+  do `SELECT` enxergam todas.
+- O `ON` decide quem casa, e o `WHERE` filtra depois. Num `LEFT JOIN`, uma
+  condição sobre a tabela da direita no `ON` mantém as linhas da esquerda sem
+  par (com `NULL`); a mesma condição no `WHERE` tira essas linhas. Como no
+  `WHERE`, só casa o que dá verdadeiro: `NULL = NULL` não casa.
+- `LEFT` mantém as linhas da esquerda sem par, com `NULL` nas colunas da
+  direita. `RIGHT` faz o contrário, e as linhas da direita sem par vêm no
+  fim, depois dos pares.
+- `SELECT *` traz as colunas na ordem do `FROM` e dos JOINs. No cabeçalho,
+  uma coluna ganha a tabela na frente (`pessoas.id`) só quando outra coluna
+  do resultado, de outra tabela, tem o mesmo nome. O servidor manda esse
+  mesmo nome em `columns`.
+- Ainda não há alias, então uma tabela não pode aparecer duas vezes no mesmo
+  `FROM`.
+- `JOIN`, `INNER`, `LEFT`, `RIGHT` e `OUTER` são keywords: não servem mais
+  como nome de tabela ou coluna.
+
+O JOIN roda como **nested loop** (`cmd/my_dbms/join.go`). Cada tabela é lida
+inteira para a memória uma vez (`db.ReadTable`) e, para cada linha juntada
+até ali, o loop percorre todas as linhas da próxima tabela e testa o `ON` no
+par. Ler tudo antes deixa só uma transação de leitura aberta por vez e
+permite percorrer o lado de dentro de novo para cada linha de fora. O custo
+é `n × m` comparações e a memória das tabelas inteiras; usar índice no JOIN
+(index nested loop) ou hash join fica para depois. O `EXPLAIN` mostra isso:
+
+```
+my_dbms> EXPLAIN SELECT * FROM pessoas LEFT JOIN pedidos ON pessoas.id = pessoa_id;
+varredura completa na tabela pessoas
+LEFT JOIN por nested loop: varredura completa na tabela pedidos
+```
+
 ## Como adicionar um comando
 
 1. Se o comando usa uma palavra nova, adicione em `keywords` em
@@ -530,7 +587,7 @@ varredura completa na tabela p
 2. Em `internal/parser/ast.go`, crie o tipo do comando com o método
    `statement()`. Em `parser.go`, adicione um `case` em `statement` e o
    método que lê a gramática dele, usando os ajudantes `expect`, `accept`, `ident`,
-   `literal`, `list` e `names`.
+   `columnRef`, `literal`, `list` e `names`.
 3. Adicione um `case` em `cmd/my_dbms/execute.go` que chama uma função
    própria do comando (como `createTable`, `insert`, `selectRows`):
    ```go

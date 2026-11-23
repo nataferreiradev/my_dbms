@@ -81,7 +81,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "SELECT * FROM t WHERE ativo = TRUE",
-			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"ativo"}, Right: Literal{Bool, "TRUE"}}},
+			want:  &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{Name: "ativo"}, Right: Literal{Bool, "TRUE"}}},
 		},
 		{
 			input: `INSERT INTO t (nome, id) VALUES ('Ana', 1), ('Bia', 2)`,
@@ -96,7 +96,46 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "select nome, id from t",
-			want:  &Select{Table: "t", Columns: []string{"nome", "id"}},
+			want:  &Select{Table: "t", Columns: []ColumnRef{{Name: "nome"}, {Name: "id"}}},
+		},
+		{
+			input: "SELECT * FROM a JOIN b ON a.id = b.a_id",
+			want: &Select{Table: "a", Joins: []Join{{
+				Kind: "INNER", Table: "b",
+				On: &Comparison{Op: "=", Left: ColumnRef{Table: "a", Name: "id"}, Right: ColumnRef{Table: "b", Name: "a_id"}},
+			}}},
+		},
+		{
+			input: "SELECT a.x, y FROM a inner join b ON x = y LEFT OUTER JOIN c ON c.z IS NULL RIGHT JOIN d ON d.w = 1 WHERE x > 2",
+			want: &Select{
+				Table:   "a",
+				Columns: []ColumnRef{{Table: "a", Name: "x"}, {Name: "y"}},
+				Joins: []Join{
+					{Kind: "INNER", Table: "b", On: &Comparison{Op: "=", Left: ColumnRef{Name: "x"}, Right: ColumnRef{Name: "y"}}},
+					{Kind: "LEFT", Table: "c", On: &IsNull{Expr: ColumnRef{Table: "c", Name: "z"}}},
+					{Kind: "RIGHT", Table: "d", On: &Comparison{Op: "=", Left: ColumnRef{Table: "d", Name: "w"}, Right: Literal{Number, "1"}}},
+				},
+				Where: &Comparison{Op: ">", Left: ColumnRef{Name: "x"}, Right: Literal{Number, "2"}},
+			},
+		},
+		{
+			input: "SELECT * FROM a LEFT JOIN b ON a.id = b.id AND b.ok = TRUE",
+			want: &Select{Table: "a", Joins: []Join{{
+				Kind: "LEFT", Table: "b",
+				On: &Logical{
+					Op:    "AND",
+					Left:  &Comparison{Op: "=", Left: ColumnRef{Table: "a", Name: "id"}, Right: ColumnRef{Table: "b", Name: "id"}},
+					Right: &Comparison{Op: "=", Left: ColumnRef{Table: "b", Name: "ok"}, Right: Literal{Bool, "TRUE"}},
+				},
+			}}},
+		},
+		{
+			input: "SELECT t.nome, id FROM t WHERE t.id = 1",
+			want: &Select{
+				Table:   "t",
+				Columns: []ColumnRef{{Table: "t", Name: "nome"}, {Name: "id"}},
+				Where:   &Comparison{Op: "=", Left: ColumnRef{Table: "t", Name: "id"}, Right: Literal{Number, "1"}},
+			},
 		},
 		{
 			input: "UPDATE t SET nome = 'Bia', idade = NULL WHERE id = 2",
@@ -106,7 +145,7 @@ func TestParse(t *testing.T) {
 					{Column: "nome", Value: Literal{String, "Bia"}},
 					{Column: "idade", Value: Literal{Null, "NULL"}},
 				},
-				Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "2"}},
+				Where: &Comparison{Op: "=", Left: ColumnRef{Name: "id"}, Right: Literal{Number, "2"}},
 			},
 		},
 		{
@@ -115,7 +154,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			input: "DELETE FROM t WHERE a IS NULL;",
-			want:  &Delete{Table: "t", Where: &IsNull{Expr: ColumnRef{"a"}}},
+			want:  &Delete{Table: "t", Where: &IsNull{Expr: ColumnRef{Name: "a"}}},
 		},
 		{
 			input: "DELETE FROM t",
@@ -130,11 +169,11 @@ func TestParse(t *testing.T) {
 			input: "SELECT * FROM t WHERE a = 1 OR b > 'x' AND c IS NOT NULL",
 			want: &Select{Table: "t", Where: &Logical{
 				Op:   "OR",
-				Left: &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
+				Left: &Comparison{Op: "=", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
 				Right: &Logical{
 					Op:    "AND",
-					Left:  &Comparison{Op: ">", Left: ColumnRef{"b"}, Right: Literal{String, "x"}},
-					Right: &IsNull{Expr: ColumnRef{"c"}, Not: true},
+					Left:  &Comparison{Op: ">", Left: ColumnRef{Name: "b"}, Right: Literal{String, "x"}},
+					Right: &IsNull{Expr: ColumnRef{Name: "c"}, Not: true},
 				},
 			}},
 		},
@@ -144,10 +183,10 @@ func TestParse(t *testing.T) {
 				Op: "AND",
 				Left: &Logical{
 					Op:    "OR",
-					Left:  &Comparison{Op: "<>", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
-					Right: &IsNull{Expr: ColumnRef{"b"}},
+					Left:  &Comparison{Op: "<>", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
+					Right: &IsNull{Expr: ColumnRef{Name: "b"}},
 				},
-				Right: &Comparison{Op: "<=", Left: Literal{Number, "2"}, Right: ColumnRef{"a"}},
+				Right: &Comparison{Op: "<=", Left: Literal{Number, "2"}, Right: ColumnRef{Name: "a"}},
 			}},
 		},
 		{
@@ -156,10 +195,10 @@ func TestParse(t *testing.T) {
 				Op: "AND",
 				Left: &Logical{
 					Op:    "AND",
-					Left:  &Comparison{Op: "=", Left: ColumnRef{"a"}, Right: Literal{Number, "1"}},
-					Right: &Comparison{Op: "=", Left: ColumnRef{"b"}, Right: Literal{Number, "2"}},
+					Left:  &Comparison{Op: "=", Left: ColumnRef{Name: "a"}, Right: Literal{Number, "1"}},
+					Right: &Comparison{Op: "=", Left: ColumnRef{Name: "b"}, Right: Literal{Number, "2"}},
 				},
-				Right: &Comparison{Op: "=", Left: ColumnRef{"c"}, Right: Literal{Number, "3"}},
+				Right: &Comparison{Op: "=", Left: ColumnRef{Name: "c"}, Right: Literal{Number, "3"}},
 			}},
 		},
 		{
@@ -169,7 +208,7 @@ func TestParse(t *testing.T) {
 		{input: "DROP INDEX t_nome", want: &DropIndex{Name: "t_nome"}},
 		{
 			input: "EXPLAIN SELECT * FROM t WHERE id = 1",
-			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{"id"}, Right: Literal{Number, "1"}}}},
+			want:  &Explain{Statement: &Select{Table: "t", Where: &Comparison{Op: "=", Left: ColumnRef{Name: "id"}, Right: Literal{Number, "1"}}}},
 		},
 		{input: "explain delete from t", want: &Explain{Statement: &Delete{Table: "t"}}},
 	}
@@ -222,6 +261,17 @@ func TestParseErrors(t *testing.T) {
 		{input: "UPDATE t SET a 1", wantErr: `esperava "="`},
 		{input: "UPDATE t SET a = b", wantErr: "esperava um valor"},
 		{input: "UPDATE t SET a = 1,", wantErr: "esperava um nome"},
+		{input: "UPDATE t SET t.a = 1", wantErr: "esperava um nome"},
+		{input: "CREATE TABLE t.x (a INT)", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM t.x", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a JOIN b", wantErr: `esperava "ON", mas o comando acabou`},
+		{input: "SELECT * FROM a JOIN ON a.id = 1", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a JOIN b ON", wantErr: "esperava uma coluna ou um valor"},
+		{input: "SELECT * FROM a LEFT b ON a.id = b.id", wantErr: `esperava "JOIN"`},
+		{input: "SELECT * FROM a INNER OUTER JOIN b ON a.id = b.id", wantErr: `esperava "JOIN"`},
+		{input: "SELECT * FROM a OUTER JOIN b ON a.id = b.id", wantErr: "esperava o fim do comando"},
+		{input: "SELECT * FROM a JOIN b.c ON a.id = 1", wantErr: "esperava um nome"},
+		{input: "SELECT * FROM a WHERE a.id = 1 JOIN b ON a.id = b.id", wantErr: "esperava o fim do comando"},
 		{input: "DELETE t", wantErr: `esperava "FROM"`},
 		{input: "DELETE FROM t WHERE", wantErr: "esperava uma coluna ou um valor"},
 		{input: "DROP t", wantErr: `esperava "TABLE"`},
@@ -258,6 +308,7 @@ func FuzzParse(f *testing.F) {
 		"CREATE INDEX i ON p (a, b);",
 		"DROP INDEX i",
 		"EXPLAIN SELECT * FROM p WHERE a >= 1 AND a < 9",
+		"SELECT p.a, q.b FROM p LEFT OUTER JOIN q ON p.a = q.a RIGHT JOIN r ON r.c IS NULL WHERE q.b > 1;",
 	} {
 		f.Add(s)
 	}
