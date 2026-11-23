@@ -38,6 +38,11 @@ type DB struct {
 	dir      string
 	pageSize int
 	tables   map[string]Schema
+
+	// Embed transforma textos em vetores, para os índices vetoriais. Quem
+	// abre o banco é quem liga numa API (o pacote embed); nil faz um
+	// comando que precise de embedding dar erro.
+	Embed func(texts []string) ([][]float32, error)
 }
 
 type Column struct {
@@ -101,7 +106,8 @@ func (i Index) Unique() bool {
 
 type Schema struct {
 	Columns []Column
-	Indexes []Index
+	Indexes []Index // as B+trees: chaves e CREATE INDEX
+	Vector  *Index  // o índice vetorial, se a tabela tiver (vector.go)
 }
 
 // Row é uma linha lida de uma tabela, com o endereço dela.
@@ -207,6 +213,20 @@ func (db *DB) loadCatalog() error {
 			}
 			schema.Indexes = append(schema.Indexes, idx)
 			db.tables[tableName] = schema
+		case string(VectorIndex):
+			schema, ok := db.tables[tableName]
+			if !ok {
+				return false, fmt.Errorf("catálogo corrompido: índice %q aponta para a tabela %q, que não existe", name, tableName)
+			}
+			idx := Index{Name: name, Kind: VectorIndex, Columns: strings.Split(def, ",")}
+			if err := checkIndexColumns(schema, tableName, idx.Columns); err != nil {
+				return false, fmt.Errorf("catálogo corrompido: índice %q: %w", name, err)
+			}
+			if schema.Vector != nil {
+				return false, fmt.Errorf("catálogo corrompido: a tabela %q tem dois índices vetoriais", tableName)
+			}
+			schema.Vector = &idx
+			db.tables[tableName] = schema
 		default:
 			return false, fmt.Errorf("catálogo corrompido: tipo de objeto %q desconhecido", kind)
 		}
@@ -243,13 +263,34 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Index) error {
 			return fmt.Errorf("coluna %q: tipo %q desconhecido (use INT, REAL, TEXT ou BOOLEAN)", c.Name, c.Type)
 		}
 	}
-	keys, err := nameKeys(name, columns, keys)
+	// O índice vetorial (WITH EMBEDDING) vem junto com as chaves, mas não é
+	// uma B+tree: fica separado, em Schema.Vector.
+	var vector *Index
+	var btrees []Index
+	for _, k := range keys {
+		if k.Kind != VectorIndex {
+			btrees = append(btrees, k)
+			continue
+		}
+		if vector != nil {
+			return errors.New("tabela só pode ter um índice vetorial")
+		}
+		if err := checkIndexColumns(Schema{Columns: columns}, name, k.Columns); err != nil {
+			return err
+		}
+		vector = &Index{Name: name + "_embedding", Kind: VectorIndex, Columns: slices.Clone(k.Columns)}
+	}
+	keys, err := nameKeys(name, columns, btrees)
 	if err != nil {
 		return err
 	}
-	for _, k := range keys {
-		if db.nameInUse(k.Name) {
-			return fmt.Errorf("o nome %q da chave já é usado por outra tabela ou índice", k.Name)
+	all := keys
+	if vector != nil {
+		all = append(slices.Clone(keys), *vector)
+	}
+	for _, k := range all {
+		if db.nameInUse(k.Name) || k.Name == name {
+			return fmt.Errorf("o nome %q do índice já é usado por outra tabela ou índice", k.Name)
 		}
 	}
 	// Coluna de chave primária nunca é NULL, como no SQL padrão.
@@ -289,11 +330,22 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Index) error {
 		}
 		created = append(created, k.Name)
 	}
+	if vector != nil {
+		err := createFile(db.tablePath(vector.Name), db.pageSize)
+		if errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("o arquivo %s já existe, mas não está no catálogo", db.tablePath(vector.Name))
+		}
+		if err != nil {
+			removeCreated()
+			return err
+		}
+		created = append(created, vector.Name)
+	}
 
 	t := db.begin()
 	defer t.close()
 	records := [][]Value{catalogRow(kindTable, name, name, formatColumns(columns))}
-	for _, k := range keys {
+	for _, k := range all {
 		records = append(records, catalogRow(string(k.Kind), k.Name, name, strings.Join(k.Columns, ",")))
 	}
 	if err := t.appendCatalog(records...); err != nil {
@@ -304,7 +356,7 @@ func (db *DB) CreateTable(name string, columns []Column, keys []Index) error {
 		removeCreated()
 		return err
 	}
-	db.tables[name] = Schema{Columns: columns, Indexes: keys}
+	db.tables[name] = Schema{Columns: columns, Indexes: keys, Vector: vector}
 	return nil
 }
 
@@ -425,10 +477,16 @@ func (db *DB) InsertRows(name string, rows [][]Value) error {
 	if err := checkRows(schema, rows); err != nil {
 		return err
 	}
+	var vectors [][]byte
+	if schema.Vector != nil {
+		if vectors, err = db.embedRows(schema, rows, nil); err != nil {
+			return err
+		}
+	}
 
 	t := db.begin()
 	defer t.close()
-	for _, row := range rows {
+	for i, row := range rows {
 		rec, err := encodeRecord(schema.Columns, row)
 		if err != nil {
 			return err
@@ -443,8 +501,39 @@ func (db *DB) InsertRows(name string, rows [][]Value) error {
 		if err := t.addToIndexes(schema, rid, row); err != nil {
 			return err
 		}
+		if vectors != nil {
+			if err := t.addVector(schema.Vector.Name, rid, vectors[i]); err != nil {
+				return err
+			}
+		}
 	}
 	return t.commit()
+}
+
+// embedChanged calcula, para um UPDATE, os vetores das linhas cujo texto do
+// índice vetorial mudou. As outras ficam com nil e reaproveitam o vetor que
+// já têm: mudar uma coluna fora do índice não chama a API.
+func (db *DB) embedChanged(name string, schema Schema, rids []RID, rows [][]Value) (vectors [][]byte, changed []bool, err error) {
+	t := db.begin()
+	changed = make([]bool, len(rows))
+	var which []int
+	for i, rid := range rids {
+		old, err := t.row(name, schema, rid)
+		if err != nil {
+			t.close()
+			return nil, nil, err
+		}
+		if embedText(schema, *schema.Vector, old) != embedText(schema, *schema.Vector, rows[i]) {
+			changed[i] = true
+			which = append(which, i)
+		}
+	}
+	t.close()
+	if len(which) == 0 {
+		return make([][]byte, len(rows)), changed, nil
+	}
+	vectors, err = db.embedRows(schema, rows, which)
+	return vectors, changed, err
 }
 
 // UpdateRows troca as linhas dos endereços rids pelas de rows (rows[i] vai
@@ -461,9 +550,22 @@ func (db *DB) UpdateRows(name string, rids []RID, rows [][]Value) error {
 	if err := checkRows(schema, rows); err != nil {
 		return err
 	}
+	var vectors [][]byte
+	var changed []bool
+	if schema.Vector != nil {
+		if vectors, changed, err = db.embedChanged(name, schema, rids, rows); err != nil {
+			return err
+		}
+	}
 
 	t := db.begin()
 	defer t.close()
+	var oldVectors map[RID][]byte
+	if schema.Vector != nil {
+		if oldVectors, err = t.removeVectors(schema.Vector.Name, rids); err != nil {
+			return err
+		}
+	}
 	// Primeiro tira as linhas antigas dos índices, depois põe as novas. Assim
 	// trocar valores entre linhas (a = 1 vira 2 e a = 2 vira 1) não esbarra
 	// na chave de uma linha que também está mudando.
@@ -491,6 +593,16 @@ func (db *DB) UpdateRows(name string, rids []RID, rows [][]Value) error {
 		if err := t.addToIndexes(schema, rid, row); err != nil {
 			return err
 		}
+		// O vetor volta com o RID novo, que muda se a linha mudou de página.
+		if schema.Vector != nil {
+			vector := vectors[i]
+			if !changed[i] {
+				vector = oldVectors[rids[i]]
+			}
+			if err := t.addVector(schema.Vector.Name, rid, vector); err != nil {
+				return err
+			}
+		}
 	}
 	return t.commit()
 }
@@ -503,6 +615,11 @@ func (db *DB) DeleteRows(name string, rids []RID) error {
 	}
 	t := db.begin()
 	defer t.close()
+	if schema.Vector != nil {
+		if _, err := t.removeVectors(schema.Vector.Name, rids); err != nil {
+			return err
+		}
+	}
 	for _, rid := range rids {
 		row, err := t.row(name, schema, rid)
 		if err != nil {
@@ -568,6 +685,9 @@ func indexNames(schema Schema) []string {
 	var names []string
 	for _, idx := range schema.Indexes {
 		names = append(names, idx.Name)
+	}
+	if schema.Vector != nil {
+		names = append(names, schema.Vector.Name)
 	}
 	return names
 }
