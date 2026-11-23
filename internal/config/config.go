@@ -138,9 +138,18 @@ func CredentialsPath() (string, error) {
 	return filepath.Join(dir, "my_dbms", "credentials"), nil
 }
 
-// APIKey devolve a chave da API: a de KeyEnv ou, sem ela, a do arquivo
-// path. Sem nenhuma das duas, devolve "" (provedores locais não usam chave).
-func APIKey(path string) (string, error) {
+// O arquivo de credenciais guarda a chave junto com o endereço da API dela:
+//
+//	url = https://api.openai.com/v1
+//	key = sk-...
+//
+// A chave só é usada com esse endereço. Se alguém trocar o embedding_url no
+// my_dbms.conf, a chave não vai junto para o servidor novo.
+
+// APIKey devolve a chave da API para o endereço url: a de KeyEnv ou, sem
+// ela, a do arquivo path, se for desse endereço. Sem nenhuma, devolve ""
+// (provedores locais não usam chave).
+func APIKey(path, url string) (string, error) {
 	if key := os.Getenv(KeyEnv); key != "" {
 		return key, nil
 	}
@@ -151,14 +160,27 @@ func APIKey(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	var savedURL, key string
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		switch strings.TrimSpace(k) {
+		case "url":
+			savedURL = strings.TrimSpace(v)
+		case "key":
+			key = strings.TrimSpace(v)
+		}
+	}
+	if savedURL != url {
+		return "", nil
+	}
+	return key, nil
 }
 
-// SaveAPIKey grava a chave no arquivo path, legível só pelo dono. No Linux
-// e no macOS isso é a permissão 0600; no Windows, quem protege é a pasta do
-// perfil do usuário, que os outros usuários não leem. Chave vazia apaga o
-// arquivo.
-func SaveAPIKey(path, key string) error {
+// SaveAPIKey grava a chave da API do endereço url no arquivo path, legível
+// só pelo dono. No Linux e no macOS isso é a permissão 0600; no Windows,
+// quem protege é a pasta do perfil do usuário, que os outros usuários não
+// leem. Chave vazia apaga o arquivo.
+func SaveAPIKey(path, url, key string) error {
 	if key == "" {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
@@ -169,7 +191,11 @@ func SaveAPIKey(path, key string) error {
 		return err
 	}
 	// Se o arquivo já existe, o WriteFile não muda a permissão dele.
-	if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
+	if strings.ContainsAny(url+key, "\r\n") {
+		return errors.New("o endereço e a chave da API não podem ter quebra de linha")
+	}
+	data := "url = " + url + "\nkey = " + key + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o600)

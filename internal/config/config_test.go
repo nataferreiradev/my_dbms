@@ -101,25 +101,34 @@ func TestAPIKey(t *testing.T) {
 	t.Setenv(KeyEnv, "")
 	path := filepath.Join(t.TempDir(), "my_dbms", "credentials")
 
-	if key, err := APIKey(path); err != nil || key != "" {
+	const url = "https://api.openai.com/v1"
+
+	if key, err := APIKey(path, url); err != nil || key != "" {
 		t.Errorf("sem arquivo: %q, %v", key, err)
 	}
-	if err := SaveAPIKey(path, "sk-arquivo"); err != nil {
+	if err := SaveAPIKey(path, url, "sk-arquivo"); err != nil {
 		t.Fatal(err)
 	}
-	if key, err := APIKey(path); err != nil || key != "sk-arquivo" {
+	if key, err := APIKey(path, url); err != nil || key != "sk-arquivo" {
 		t.Errorf("do arquivo: %q, %v", key, err)
+	}
+	// A chave é do endereço em que foi gravada: não vai para outro servidor.
+	if key, err := APIKey(path, "https://outro.exemplo/v1"); err != nil || key != "" {
+		t.Errorf("outro endereço recebeu a chave: %q, %v", key, err)
+	}
+	if err := SaveAPIKey(path, url, "sk-a\nurl = x"); err == nil {
+		t.Error("chave com quebra de linha foi aceita")
 	}
 	if info, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Errorf("permissão do arquivo: %v, %v", info.Mode(), err)
 	}
 
 	t.Setenv(KeyEnv, "sk-ambiente")
-	if key, _ := APIKey(path); key != "sk-ambiente" {
+	if key, _ := APIKey(path, url); key != "sk-ambiente" {
 		t.Errorf("a variável de ambiente deveria valer mais: %q", key)
 	}
 
-	if err := SaveAPIKey(path, ""); err != nil {
+	if err := SaveAPIKey(path, url, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
