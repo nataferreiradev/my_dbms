@@ -22,6 +22,8 @@ const (
 func main() {
 	listen := flag.String("listen", "", "em vez do REPL, atende clientes por TCP neste endereço (ex.: localhost:4321)")
 	httpAddr := flag.String("http", "", "em vez do REPL, atende a página web/index.html por HTTP neste endereço (ex.: localhost:4321)")
+	mcp := flag.Bool("mcp", false, "em vez do REPL, atende um assistente de IA por MCP no stdin e stdout")
+	mcpWrite := flag.Bool("mcp-write", false, "com -mcp, deixa a IA alterar o banco (ferramenta execute)")
 	flag.Parse()
 
 	cfg, err := config.Load(configFile)
@@ -34,6 +36,17 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao abrir banco:", err)
 		os.Exit(1)
+	}
+
+	if *mcp {
+		// O stdout é do protocolo: os avisos vão para o stderr, pelo log.
+		log.Printf("my_dbms atendendo MCP no stdin (dados em %s)", cfg.DataDir)
+		m := &mcpServer{db: db, write: *mcpWrite}
+		if err := m.serve(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "erro no MCP:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *httpAddr != "" {

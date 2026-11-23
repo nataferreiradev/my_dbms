@@ -80,6 +80,17 @@ linha de JSON de resposta para cada um. Dá para testar com
 Para usar pelo navegador, suba com `-http` no lugar de `-listen` e abra
 `http://localhost:4321`.
 
+## Com IA (MCP)
+
+```
+go build -o my_dbms.exe ./cmd/my_dbms
+claude mcp add my_dbms -- ./my_dbms.exe -mcp
+```
+
+Com `-mcp`, um assistente de IA (Claude Code, Claude Desktop) enxerga o
+schema e roda `SELECT` no banco. Com `-mcp-write`, também pode alterar. Veja
+[docs/estrutura.md](docs/estrutura.md#por-ia-mcp).
+
 ## Mais exemplos
 
 ```sql

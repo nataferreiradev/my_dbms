@@ -7,8 +7,8 @@ O objetivo é ter código pequeno e direto, que dê para ler de cima a baixo.
 
 ```
 my_dbms/
-├── cmd/my_dbms/          → executável (REPL ou servidor TCP)
-│   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen ou -http, sobe o servidor
+├── cmd/my_dbms/          → executável (REPL, servidor TCP/HTTP ou MCP)
+│   ├── main.go           → lê linhas do stdin e imprime o resultado; com -listen, -http ou -mcp, sobe o servidor
 │   ├── execute.go        → roda cada tipo de Statement: valida e chama o storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): condição do WHERE → função que testa a linha;
@@ -22,6 +22,8 @@ my_dbms/
 │   ├── server_test.go
 │   ├── web.go            → servidor HTTP: POST /sql, para a página web/index.html
 │   ├── web_test.go
+│   ├── mcp.go            → servidor MCP no stdin/stdout, para assistentes de IA
+│   ├── mcp_test.go
 │   └── bench_test.go     → benchmark do SELECT por chave
 ├── internal/
 │   ├── config/           → parâmetros do banco
@@ -171,6 +173,38 @@ ficam para quando houver MVCC.
 
 O servidor e o REPL não devem abrir a mesma `data_dir` ao mesmo tempo: são
 dois processos, e a trava só vale dentro de um.
+
+### Por IA (MCP)
+
+Com `-mcp`, o executável fala [MCP](https://modelcontextprotocol.io)
+(Model Context Protocol) no stdin e no stdout, para um assistente de IA
+consultar o banco. O cliente (Claude Code, Claude Desktop, um editor) é quem
+sobe o processo. No Claude Code, de dentro da pasta do projeto:
+
+```
+go build -o my_dbms.exe ./cmd/my_dbms
+claude mcp add my_dbms -- ./my_dbms.exe -mcp
+```
+
+O protocolo é JSON-RPC 2.0, uma mensagem por linha (`cmd/my_dbms/mcp.go`). O
+assistente enxerga estas ferramentas:
+
+| Ferramenta | Faz |
+|---|---|
+| `schema` | Mostra o `_catalog`: as tabelas, as colunas e as chaves. |
+| `query` | Roda um `SELECT` ou um `EXPLAIN`. Outro comando é recusado. |
+| `execute` | Roda qualquer comando. Só existe com `-mcp-write`. |
+
+Sem `-mcp-write`, a IA não consegue alterar nada. O erro de um comando volta
+como resultado da ferramenta (`isError`), e não como erro do protocolo, para
+a IA ler a mensagem e corrigir o SQL. Na inicialização, o servidor também
+manda instruções curtas dizendo o que o SQL aceita e o que ainda falta (como
+`ORDER BY`), para a IA não perder tempo tentando.
+
+O `my_dbms.conf` e o `data_dir` relativo partem da pasta onde o cliente
+sobe o processo. Como o stdout é do protocolo, os avisos vão para o stderr.
+O cliente manda um pedido por vez, então não há trava; e, como no servidor,
+o MCP não deve abrir a mesma `data_dir` que outro processo.
 
 ## Fluxo de um comando
 

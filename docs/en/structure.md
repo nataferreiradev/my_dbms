@@ -8,8 +8,8 @@ bottom.
 
 ```
 my_dbms/
-├── cmd/my_dbms/          → executable (REPL or TCP server)
-│   ├── main.go           → reads lines from stdin and prints the result; with -listen or -http, starts the server
+├── cmd/my_dbms/          → executable (REPL, TCP/HTTP server or MCP)
+│   ├── main.go           → reads lines from stdin and prints the result; with -listen, -http or -mcp, starts the server
 │   ├── execute.go        → runs each kind of Statement: validates and calls storage
 │   ├── execute_test.go
 │   ├── where.go          → compileWhere(): WHERE condition → function that tests a row;
@@ -23,6 +23,8 @@ my_dbms/
 │   ├── server_test.go
 │   ├── web.go            → HTTP server: POST /sql, for the web/index.html page
 │   ├── web_test.go
+│   ├── mcp.go            → MCP server on stdin/stdout, for AI assistants
+│   ├── mcp_test.go
 │   └── bench_test.go     → benchmark of SELECT by key
 ├── internal/
 │   ├── config/           → database parameters
@@ -173,6 +175,39 @@ can come with MVCC.
 
 The server and the REPL shouldn't open the same `data_dir` at the same time:
 they are two processes, and the lock only works inside one.
+
+### From AI (MCP)
+
+With `-mcp`, the executable speaks [MCP](https://modelcontextprotocol.io)
+(Model Context Protocol) on stdin and stdout, so an AI assistant can query
+the database. The client (Claude Code, Claude Desktop, an editor) is the one
+that starts the process. In Claude Code, from the project folder:
+
+```
+go build -o my_dbms.exe ./cmd/my_dbms
+claude mcp add my_dbms -- ./my_dbms.exe -mcp
+```
+
+The protocol is JSON-RPC 2.0, one message per line (`cmd/my_dbms/mcp.go`).
+The assistant sees these tools:
+
+| Tool | Does |
+|---|---|
+| `schema` | Shows `_catalog`: the tables, columns and keys. |
+| `query` | Runs a `SELECT` or an `EXPLAIN`. Any other command is refused. |
+| `execute` | Runs any command. Only exists with `-mcp-write`. |
+
+Without `-mcp-write`, the AI can't change anything. A command's error comes
+back as the tool result (`isError`), not as a protocol error, so the AI can
+read the message and fix the SQL. On initialization, the server also sends
+short instructions saying what the SQL accepts and what is still missing
+(like `ORDER BY`), so the AI doesn't waste time trying.
+
+`my_dbms.conf` and a relative `data_dir` are resolved from the folder where
+the client starts the process. Since stdout belongs to the protocol, log
+messages go to stderr. The client sends one request at a time, so there is
+no lock; and, as with the server, MCP shouldn't open the same `data_dir` as
+another process.
 
 ## How a command flows
 
